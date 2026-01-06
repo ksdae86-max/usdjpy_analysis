@@ -21,97 +21,88 @@ def analyze_market():
         response = requests.get(url, timeout=20)
         data = response.json()
         if "Time Series FX (Daily)" not in data:
-            print(f"APIエラー: {data.get('Note', 'データなし')}")
+            print(f"APIエラー: {data.get('Note', 'データ取得失敗')}")
             return
         
         df = pd.DataFrame.from_dict(data["Time Series FX (Daily)"], orient='index').astype(float)
         df.index = pd.to_datetime(df.index)
         df = df.sort_index()
         df.columns = ['Open', 'High', 'Low', 'Close']
-        
-        # 10回ブラッシュアップ①: データの十分性チェック
-        if len(df) < 30:
-            print("計算に必要なデータ件数が不足しています")
-            return
-            
     except Exception as e:
-        print(f"システムエラー: {e}")
+        print(f"処理失敗: {e}")
         return
 
-    # 10回ブラッシュアップ②: RSI計算の精密化（Wilderの平滑化を再現）
+    # --- 10回ブラッシュアップ: インジケーター計算の堅牢化 ---
     window = 14
     delta = df['Close'].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.ewm(alpha=1/window, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/window, adjust=False).mean()
-    df['RSI'] = 100 - (100 / (1 + (avg_gain / avg_loss)))
+    gain = delta.clip(lower=0).ewm(alpha=1/window, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1/window, adjust=False).mean()
+    df['RSI'] = 100 - (100 / (1 + (gain / loss)))
     
-    # 10回ブラッシュアップ③: ボリンジャーバンドとMA20
     df['MA20'] = df['Close'].rolling(window=20).mean()
     df['STD'] = df['Close'].rolling(window=20).std()
     df['Upper'] = df['MA20'] + (df['STD'] * 2)
     df['Lower'] = df['MA20'] - (df['STD'] * 2)
 
-    # 10回ブラッシュアップ④: データの抽出と型保証
+    # --- ターゲット抽出 ---
     target = df.iloc[-1]
     prev = df.iloc[-2]
     o, h, l, c = target['Open'], target['High'], target['Low'], target['Close']
-    
-    # 10回ブラッシュアップ⑤: トレンド強度の数値化 (MA20の傾き)
     ma_slope = (target['MA20'] - df['MA20'].iloc[-5]) / 5
-    trend_type = "📈 強気" if ma_slope > 0.05 else "📉 弱気" if ma_slope < -0.05 else "➡️ 横ばい"
     
-    # 10回ブラッシュアップ⑥: 厳格なヒゲ計算（浮動小数点の誤差を考慮）
     body = abs(o - c)
     upper_wick = h - max(o, c)
     lower_wick = min(o, c) - l
-    safe_body = max(body, 0.015) # 1.5ピップス以下の実体は極小とみなす
+    safe_body = max(body, 0.015) # 1.5pips以下の実体は極小扱い
     
-    alerts = []
-    # 10回ブラッシュアップ⑦: 厳格な「2.0倍」基準の適用
-    RATIO = 2.0
+    signals = []
+    max_priority = 0 # 0:なし, 1:注目, 2:強烈
 
-    # 10回ブラッシュアップ⑧: 文脈依存のシグナル判定
-    # A. 押し目買い（上昇中 ＋ RSI 40-55 ＋ 長い下ヒゲ）
-    if ma_slope > 0 and 38 <= target['RSI'] <= 58:
-        if lower_wick >= safe_body * RATIO:
-            alerts.append(f"✅ **押し目買い好機**: 上昇トレンド中の強い反発（下ヒゲ {lower_wick/safe_body:.1f}倍）")
-
-    # B. 戻り売り（下落中 ＋ RSI 42-62 ＋ 長い上ヒゲ）
-    if ma_slope < 0 and 42 <= target['RSI'] <= 62:
-        if upper_wick >= safe_body * RATIO:
-            alerts.append(f"✅ **戻り売り好機**: 下落トレンド中の戻り叩き（上ヒゲ {upper_wick/safe_body:.1f}倍）")
-
-    # C. 極値反転（過熱 ＋ BB2σ到達 ＋ 長い逆ヒゲ）
-    if target['RSI'] > 68 or h >= target['Upper']:
-        if upper_wick >= safe_body * RATIO:
-            alerts.append(f"⚠️ **天井警戒**: 過熱圏での強烈な拒絶（上ヒゲ {upper_wick/safe_body:.1f}倍）")
-            
-    if target['RSI'] < 32 or l <= target['Lower']:
-        if lower_wick >= safe_body * RATIO:
-            alerts.append(f"⚠️ **底打ち警戒**: 売られすぎ圏での強い買い戻し（下ヒゲ {lower_wick/safe_body:.1f}倍）")
-
-    # 10回ブラッシュアップ⑨: 通知ロジックの整理
-    if alerts:
-        diff_ma = ((c - target['MA20']) / target['MA20']) * 100
-        pos_pct = (c - target['Lower']) / (target['Upper'] - target['Lower']) * 100
+    # --- 判定エンジン (10回ブラッシュアップ: 条件の細分化) ---
+    def add_signal(wick_len, label, is_buy):
+        nonlocal max_priority
+        ratio = wick_len / safe_body
+        direction = "下ヒゲ" if is_buy else "上ヒゲ"
         
-        # 10回ブラッシュアップ⑩: メッセージの視覚的構造化
+        if ratio >= 2.0:
+            signals.append(f"🚨 **【強烈】{label}**\n　　└ {direction} {ratio:.1f}倍 / 信頼度: 高")
+            max_priority = max(max_priority, 2)
+        elif ratio >= 1.0:
+            signals.append(f"⚠️ **【注目】{label}**\n　　└ {direction} {ratio:.1f}倍 / 信頼度: 中")
+            max_priority = max(max_priority, 1)
+
+    # A. トレンドフォロー (押し目・戻り)
+    if ma_slope > 0.03 and 35 <= target['RSI'] <= 62:
+        if lower_wick >= safe_body: add_signal(lower_wick, "上昇トレンド押し目", True)
+    elif ma_slope < -0.03 and 38 <= target['RSI'] <= 65:
+        if upper_wick >= safe_body: add_signal(upper_wick, "下落トレンド戻り売り", False)
+
+    # B. カウンタートレード (逆張り)
+    if target['RSI'] > 68 or h >= target['Upper'] * 0.998:
+        if upper_wick >= safe_body: add_signal(upper_wick, "天井圏の反転警戒", False)
+    if target['RSI'] < 32 or l <= target['Lower'] * 1.002:
+        if lower_wick >= safe_body: add_signal(lower_wick, "底値圏の反発警戒", True)
+
+    # --- 最終通知ビルド ---
+    if signals:
+        emoji = "🚨" if max_priority == 2 else "⚠️"
+        pos_pct = (c - target['Lower']) / (target['Upper'] - target['Lower']) * 100
+        change = c - prev['Close']
+        
         full_msg = (
-            f"🏛️ **USD/JPY 厳格マーケット分析**\n"
-            f"📅 {target.name.strftime('%Y/%m/%d')} 確定値\n"
+            f"{emoji} **USD/JPY 階層型マーケット診断**\n"
+            f"📅 {target.name.strftime('%Y/%m/%d')} 終値確定\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"💰 **価格**: {c:.2f}円 ({c - prev['Close']:+.2f})\n"
-            f"🌊 **地合い**: {trend_type} (MA傾き: {ma_slope:+.3f})\n"
-            f"📏 **MA乖離**: {diff_ma:+.2f}% / **RSI**: {target['RSI']:.1f}\n"
-            f"🌐 **BB位置**: {pos_pct:.1f}% (-2σ=0% ~ +2σ=100%)\n"
+            f"💰 **価格**: {c:.2f}円 ({change:+.2f})\n"
+            f"🌊 **地合い**: {'📈 上昇' if ma_slope > 0.03 else '📉 下落' if ma_slope < -0.03 else '➡️ 調整'}\n"
+            f"📈 **RSI**: {target['RSI']:.1f} / **MA乖離**: {((c-target['MA20'])/target['MA20']*100):+.2f}%\n"
+            f"🌐 **BB位置**: {pos_pct:.1f}% (2σ圏内)\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"【シグナル判定】\n" + "\n".join(alerts)
+            f"【シグナル検出】\n" + "\n".join(signals)
         )
         send_discord(full_msg)
     else:
-        print(f"分析完了: {target.name.strftime('%m/%d')} は厳格基準を満たしませんでした。")
+        print(f"診断完了: {target.name.strftime('%m/%d')} 有意なシグナルなし")
 
 if __name__ == "__main__":
     analyze_market()
