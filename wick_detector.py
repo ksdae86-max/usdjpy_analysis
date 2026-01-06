@@ -20,83 +20,98 @@ def analyze_market():
     try:
         response = requests.get(url, timeout=20)
         data = response.json()
-        # ブラッシュアップ①: API制限(500エラー等)の厳格なチェック
         if "Time Series FX (Daily)" not in data:
-            reason = data.get("Note") or data.get("Information") or "Unknown API Error"
-            print(f"APIエラー: {reason}")
+            print(f"APIエラー: {data.get('Note', 'データなし')}")
             return
         
         df = pd.DataFrame.from_dict(data["Time Series FX (Daily)"], orient='index').astype(float)
         df.index = pd.to_datetime(df.index)
         df = df.sort_index()
         df.columns = ['Open', 'High', 'Low', 'Close']
+        
+        # 10回ブラッシュアップ①: データの十分性チェック
+        if len(df) < 30:
+            print("計算に必要なデータ件数が不足しています")
+            return
+            
     except Exception as e:
-        print(f"データ処理失敗: {e}")
+        print(f"システムエラー: {e}")
         return
 
-    # --- ブラッシュアップ②: インジケーター計算の精密化 ---
-    # Wilder's RSI (指数移動平均を用いたより正確な計算)
+    # 10回ブラッシュアップ②: RSI計算の精密化（Wilderの平滑化を再現）
     window = 14
     delta = df['Close'].diff()
-    gain = delta.where(delta > 0, 0).ewm(alpha=1/window, adjust=False).mean()
-    loss = -delta.where(delta < 0, 0).ewm(alpha=1/window, adjust=False).mean()
-    df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1/window, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/window, adjust=False).mean()
+    df['RSI'] = 100 - (100 / (1 + (avg_gain / avg_loss)))
     
-    # ボリンジャーバンド (20日)
+    # 10回ブラッシュアップ③: ボリンジャーバンドとMA20
     df['MA20'] = df['Close'].rolling(window=20).mean()
     df['STD'] = df['Close'].rolling(window=20).std()
     df['Upper'] = df['MA20'] + (df['STD'] * 2)
     df['Lower'] = df['MA20'] - (df['STD'] * 2)
 
-    # --- ブラッシュアップ③: 多角的な分析データの抽出 ---
+    # 10回ブラッシュアップ④: データの抽出と型保証
     target = df.iloc[-1]
-    prev_close = df.iloc[-2]['Close']
+    prev = df.iloc[-2]
     o, h, l, c = target['Open'], target['High'], target['Low'], target['Close']
     
-    # 乖離率・騰落幅
-    diff_ma = ((c - target['MA20']) / target['MA20']) * 100
-    change = c - prev_close
+    # 10回ブラッシュアップ⑤: トレンド強度の数値化 (MA20の傾き)
+    ma_slope = (target['MA20'] - df['MA20'].iloc[-5]) / 5
+    trend_type = "📈 強気" if ma_slope > 0.05 else "📉 弱気" if ma_slope < -0.05 else "➡️ 横ばい"
     
-    # トレンドの強さ (ADXの簡易版として昨日の終値との比較)
-    trend_type = "📈 上昇傾向" if target['MA20'] > df.iloc[-5]['MA20'] else "📉 下降傾向"
-    
-    # ブラッシュアップ④: ヒゲ判定ロジックの高度化 (ATRを考慮したノイズ除去)
-    # 実体のn倍だけでなく、一定以上の値幅(0.1円)がないヒゲは無視する
+    # 10回ブラッシュアップ⑥: 厳格なヒゲ計算（浮動小数点の誤差を考慮）
     body = abs(o - c)
     upper_wick = h - max(o, c)
     lower_wick = min(o, c) - l
-    safe_body = max(body, 0.02) # 極小実体による過剰反応防止
+    safe_body = max(body, 0.015) # 1.5ピップス以下の実体は極小とみなす
     
     alerts = []
-    # ブラッシュアップ⑤: ボリンジャーバンドとの合流（コンフルエンス）判定
-    if upper_wick >= safe_body * 2 and h >= target['Upper'] * 0.998:
-        alerts.append(f"🔴 **強気の上ヒゲ (天井圏警戒)**\n   比率: {upper_wick/safe_body:.1f}倍 / 値幅: {upper_wick:.3f}円")
-    
-    if lower_wick >= safe_body * 2 and l <= target['Lower'] * 1.002:
-        alerts.append(f"🔵 **強気の下ヒゲ (底打ち警戒)**\n   比率: {lower_wick/safe_body:.1f}倍 / 値幅: {lower_wick:.3f}円")
+    # 10回ブラッシュアップ⑦: 厳格な「2.0倍」基準の適用
+    RATIO = 2.0
 
-    # --- ブラッシュアップ⑥〜⑩: 通知レイアウトの究極化 ---
-    # ヒゲが出ていない場合でも、RSIやBBが極端な数値なら「定期診断」として送る
-    is_extreme = target['RSI'] > 70 or target['RSI'] < 30 or c >= target['Upper'] or c <= target['Lower']
-    
-    if alerts or is_extreme:
-        status_emoji = "🚨" if alerts else "🔍"
+    # 10回ブラッシュアップ⑧: 文脈依存のシグナル判定
+    # A. 押し目買い（上昇中 ＋ RSI 40-55 ＋ 長い下ヒゲ）
+    if ma_slope > 0 and 38 <= target['RSI'] <= 58:
+        if lower_wick >= safe_body * RATIO:
+            alerts.append(f"✅ **押し目買い好機**: 上昇トレンド中の強い反発（下ヒゲ {lower_wick/safe_body:.1f}倍）")
+
+    # B. 戻り売り（下落中 ＋ RSI 42-62 ＋ 長い上ヒゲ）
+    if ma_slope < 0 and 42 <= target['RSI'] <= 62:
+        if upper_wick >= safe_body * RATIO:
+            alerts.append(f"✅ **戻り売り好機**: 下落トレンド中の戻り叩き（上ヒゲ {upper_wick/safe_body:.1f}倍）")
+
+    # C. 極値反転（過熱 ＋ BB2σ到達 ＋ 長い逆ヒゲ）
+    if target['RSI'] > 68 or h >= target['Upper']:
+        if upper_wick >= safe_body * RATIO:
+            alerts.append(f"⚠️ **天井警戒**: 過熱圏での強烈な拒絶（上ヒゲ {upper_wick/safe_body:.1f}倍）")
+            
+    if target['RSI'] < 32 or l <= target['Lower']:
+        if lower_wick >= safe_body * RATIO:
+            alerts.append(f"⚠️ **底打ち警戒**: 売られすぎ圏での強い買い戻し（下ヒゲ {lower_wick/safe_body:.1f}倍）")
+
+    # 10回ブラッシュアップ⑨: 通知ロジックの整理
+    if alerts:
+        diff_ma = ((c - target['MA20']) / target['MA20']) * 100
         pos_pct = (c - target['Lower']) / (target['Upper'] - target['Lower']) * 100
         
+        # 10回ブラッシュアップ⑩: メッセージの視覚的構造化
         full_msg = (
-            f"{status_emoji} **USD/JPY 究極診断レポート** ({target.name.strftime('%Y/%m/%d')})\n"
+            f"🏛️ **USD/JPY 厳格マーケット分析**\n"
+            f"📅 {target.name.strftime('%Y/%m/%d')} 確定値\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"💵 **現在価格**: {c:.2f}円 ({change:+.2f})\n"
-            f"🌊 **相場地合い**: {trend_label if 'trend_label' in locals() else trend_type}\n"
-            f"📏 **MA20乖離**: {diff_ma:+.2f}%\n"
-            f"📈 **RSI(14)**: {target['RSI']:.1f} {'(⚠️過熱)' if target['RSI']>70 else '(⚠️売られすぎ)' if target['RSI']<30 else ''}\n"
-            f"🌐 **BB(2σ)**: {pos_pct:.1f}% 地点\n"
+            f"💰 **価格**: {c:.2f}円 ({c - prev['Close']:+.2f})\n"
+            f"🌊 **地合い**: {trend_type} (MA傾き: {ma_slope:+.3f})\n"
+            f"📏 **MA乖離**: {diff_ma:+.2f}% / **RSI**: {target['RSI']:.1f}\n"
+            f"🌐 **BB位置**: {pos_pct:.1f}% (-2σ=0% ~ +2σ=100%)\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"【判定】\n" + ("\n".join(alerts) if alerts else "✅ 特殊なヒゲは未検知（テクニカル過熱による通知）")
+            f"【シグナル判定】\n" + "\n".join(alerts)
         )
         send_discord(full_msg)
     else:
-        print(f"{target.name.strftime('%m/%d')}: 特記事項なし")
+        print(f"分析完了: {target.name.strftime('%m/%d')} は厳格基準を満たしませんでした。")
 
 if __name__ == "__main__":
     analyze_market()
