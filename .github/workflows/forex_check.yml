@@ -1,30 +1,31 @@
-name: Forex Wick Analysis
+name: Forex Wick Analysis API
 
 on:
   schedule:
-    # 火〜土の日本時間 午前7:05 (UTC 22:05) に実行
-    # FXの日足確定タイミングに合わせ、日月（市場休み）の実行を避ける
-    - cron: '5 22 * * 2-6'
+    # 毎日 日本時間 午前7:05 (UTC 22:05) に実行
+    # 火〜土（日本時間）に実行される設定
+    - cron: '5 22 * * 1-5'
   workflow_dispatch:
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
       
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip' # キャッシュを有効にして実行速度向上
           
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install yfinance==0.2.33 requests pandas numpy
+          pip install requests pandas numpy
           
       - name: Run Analysis
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY }}
         run: python wick_detector.py
