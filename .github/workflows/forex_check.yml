@@ -1,11 +1,10 @@
-name: Forex Wick Analysis API
+name: USD/JPY Market Analysis
 
 on:
   schedule:
-    # 毎日 日本時間 午前7:05 (UTC 22:05) に実行
-    # 火〜土（日本時間）に実行される設定
-    - cron: '5 22 * * 1-5'
-  workflow_dispatch:
+    # 毎日朝7時に自動実行 (日本時間)
+    - cron: '0 22 * * *'
+  workflow_dispatch: # 手動実行ボタンを有効化
 
 jobs:
   analyze:
@@ -13,19 +12,21 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          
+
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install requests pandas numpy
-          
-      - name: Run Analysis
+
+      - name: Run analysis
         env:
+          # ここでGitHubのSecretsをプログラムの環境変数に紐付けます
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY }}
+          GSHEET_URL: ${{ secrets.GSHEET_URL }}  # 👈 これを追記しました
         run: python wick_detector.py
