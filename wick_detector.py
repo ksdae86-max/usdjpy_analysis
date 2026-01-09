@@ -2,9 +2,10 @@ import os
 import requests
 import pandas as pd
 import numpy as np
+import yfinance as yf
 from datetime import datetime
 
-# --- 通知・記録用関数 ---
+# --- 通知・記録用関数 (変更なし) ---
 def send_discord(message):
     webhook_url = os.getenv("DISCORD_WEBHOOK")
     if not webhook_url: return
@@ -15,33 +16,32 @@ def send_discord(message):
 
 def send_spreadsheet(data):
     sheet_url = os.getenv("GSHEET_URL")
-    if not sheet_url: 
-        print("GSHEET_URL未設定のため記録をスキップします。")
-        return
+    if not sheet_url: return
     try:
-        # シグナルの有無に関わらずデータをPOST
         res = requests.post(sheet_url, json=data, timeout=15)
         print(f"スプレッドシート送信結果: {res.text}")
     except Exception as e: print(f"スプレッドシート送信失敗: {e}")
 
 def analyze_market():
-    api_key = os.getenv("ALPHAVANTAGE_API_KEY")
-    url = f'https://www.alphavantage.co/query?function=FX_DAILY&from_symbol=USD&to_symbol=JPY&outputsize=compact&apikey={api_key}'
-
+    # --- データ取得 (yfinanceに変更) ---
     try:
-        response = requests.get(url, timeout=20)
-        data = response.json()
-        if "Time Series FX (Daily)" not in data:
-            print(f"APIエラー: {data.get('Note', 'データなし')}")
+        # ドル円のシンボルは "JPY=X"
+        ticker = yf.Ticker("JPY=X")
+        # 過去30日分の「日足」を取得 (インジケーター計算のため30日程度確保)
+        df = ticker.history(period="30d", interval="1d")
+        
+        if df.empty:
+            print("yfinanceからのデータ取得に失敗しました。")
             return
-        df = pd.DataFrame.from_dict(data["Time Series FX (Daily)"], orient='index').astype(float)
+
+        # 列名を統一 (Open, High, Low, Close)
+        df = df[['Open', 'High', 'Low', 'Close']]
         df.index = pd.to_datetime(df.index)
         df = df.sort_index()
-        df.columns = ['Open', 'High', 'Low', 'Close']
     except Exception as e:
         print(f"データ取得失敗: {e}"); return
 
-    # --- インジケーター計算 ---
+    # --- インジケーター計算 (変更なし) ---
     window = 14
     delta = df['Close'].diff()
     gain = delta.clip(lower=0).ewm(alpha=1/window, adjust=False).mean()
@@ -52,9 +52,14 @@ def analyze_market():
     df['Upper'] = df['MA20'] + (df['STD'] * 2)
     df['Lower'] = df['MA20'] - (df['STD'] * 2)
 
-    # --- データ抽出 ---
+    # --- ターゲット抽出 ---
     target = df.iloc[-1]
     prev = df.iloc[-2]
+    
+    # 取得データの最新日付を確認
+    data_date_str = target.name.strftime('%Y/%m/%d')
+    print(f"分析対象の日付: {data_date_str}")
+
     o, h, l, c = target['Open'], target['High'], target['Low'], target['Close']
     weekday_str = ["月", "火", "水", "木", "金", "土", "日"][target.name.weekday()]
     
@@ -87,25 +92,23 @@ def analyze_market():
         if rsi_val <= 35 or l <= target['Lower']: add_signal(lower_wick, "底値反発/押し目買い", True)
         elif rsi_val <= 40: add_signal(lower_wick, "反発予兆(RSI40以下)", True)
 
-    # --- 共通ログデータ作成 ---
+    # --- ログデータ作成 ---
     pos_pct = (c - target['Lower']) / (target['Upper'] - target['Lower']) * 100
     ma_diff = ((c - target['MA20']) / target['MA20']) * 100
 
     log_data = {
-        "date": f"{target.name.strftime('%Y/%m/%d')}({weekday_str})",
+        "date": f"{data_date_str}({weekday_str})",
         "price": round(c, 2),
         "change": round(c - prev['Close'], 2),
         "trend": trend_type,
         "rsi": round(rsi_val, 1) if not np.isnan(rsi_val) else 50,
         "ma_diff": round(ma_diff, 2),
         "bb_pos": round(pos_pct, 1),
-        "signal": ", ".join(log_signals) if log_signals else "なし" # ここで「なし」と入る
+        "signal": ", ".join(log_signals) if log_signals else "なし"
     }
 
-    # 【重要】シグナルの有無に関わらずスプレッドシートへ送信
     send_spreadsheet(log_data)
 
-    # Discordはシグナルがある時だけ通知
     if signals:
         emoji = "🚨" if max_priority == 2 else "⚠️" if max_priority == 1 else "🔍"
         full_msg = (
@@ -121,7 +124,7 @@ def analyze_market():
         )
         send_discord(full_msg)
     else:
-        print(f"{target.name.strftime('%m/%d')}: シグナルなし(RSI:{rsi_val:.1f})。スプレッドシートのみ記録しました。")
+        print(f"{data_date_str}: シグナルなし(RSI:{rsi_val:.1f})。記録完了。")
 
 if __name__ == "__main__":
     analyze_market()
