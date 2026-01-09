@@ -2,31 +2,31 @@ name: USD/JPY Market Analysis
 
 on:
   schedule:
-    # 毎日朝7時に自動実行 (日本時間)
-    - cron: '0 22 * * *'
+    # 日本時間 午前9:15に実行 (UTC 0:15)
+    # 米国市場クローズ後の確定データを取得します
+    - cron: '15 0 * * *'
   workflow_dispatch: # 手動実行ボタンを有効化
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.9'
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install requests pandas numpy
+          python -m pip install --upgrade pip
+          pip install requests pandas numpy yfinance
 
       - name: Run analysis
         env:
-          # ここでGitHubのSecretsをプログラムの環境変数に紐付けます
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY }}
-          GSHEET_URL: ${{ secrets.GSHEET_URL }}  # 👈 これを追記しました
+          GSHEET_URL: ${{ secrets.GSHEET_URL }}
+        # 実行ファイル名を wick_detector.py に指定
         run: python wick_detector.py
