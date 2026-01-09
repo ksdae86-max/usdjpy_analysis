@@ -5,7 +5,6 @@ import numpy as np
 import yfinance as yf
 from datetime import datetime
 
-# --- 通知・記録用関数 ---
 def send_discord(message):
     webhook_url = os.getenv("DISCORD_WEBHOOK")
     if not webhook_url: return
@@ -17,34 +16,27 @@ def send_discord(message):
 
 def send_spreadsheet(data):
     sheet_url = os.getenv("GSHEET_URL")
-    if not sheet_url:
-        print("GSHEET_URL未設定のため記録をスキップします。")
-        return
+    if not sheet_url: return
     try:
-        # 重複防止やログの連続性のために必ず送信
         res = requests.post(sheet_url, json=data, timeout=15)
         print(f"スプレッドシート送信結果: {res.text}")
     except Exception as e:
         print(f"スプレッドシート送信失敗: {e}")
 
 def analyze_market():
-    # --- データ取得 (yfinanceで高速・確実化) ---
     try:
+        # ドル円データを取得
         ticker = yf.Ticker("JPY=X")
-        # インジケーター計算用に過去40日分取得
         df = ticker.history(period="40d", interval="1d")
-        if df.empty:
-            print("データが空です。取得に失敗しました。")
-            return
+        if df.empty: return
         
         df = df[['Open', 'High', 'Low', 'Close']]
         df.index = pd.to_datetime(df.index)
         df = df.sort_index()
     except Exception as e:
-        print(f"yfinance取得失敗: {e}")
-        return
+        print(f"データ取得失敗: {e}"); return
 
-    # --- インジケーター計算 (RSI14 / MA20 / BB2σ) ---
+    # インジケーター計算
     window = 14
     delta = df['Close'].diff()
     gain = delta.clip(lower=0).ewm(alpha=1/window, adjust=False).mean()
@@ -56,95 +48,61 @@ def analyze_market():
     df['Upper'] = df['MA20'] + (df['STD'] * 2)
     df['Lower'] = df['MA20'] - (df['STD'] * 2)
 
-    # --- ターゲット抽出 (確定した最新の日足) ---
+    # 最新の確定足（前日分）を抽出
     target = df.iloc[-1]
     prev = df.iloc[-2]
     o, h, l, c = target['Open'], target['High'], target['Low'], target['Close']
-    data_date_str = target.name.strftime('%Y/%m/%d')
-    weekday_str = ["月", "火", "水", "木", "金", "土", "日"][target.name.weekday()]
     
-    # トレンド診断
+    # 乖離率・トレンド
     ma_slope = (target['MA20'] - df['MA20'].iloc[-5]) / 5
     trend_type = "📈上昇" if ma_slope > 0.02 else "📉下落" if ma_slope < -0.02 else "➡️横ばい"
+    ma_diff = ((c - target['MA20']) / target['MA20']) * 100
 
-    # ヒゲ判定用
+    # ヒゲ計算
     body = abs(o - c)
     upper_wick = h - max(o, c)
     lower_wick = min(o, c) - l
-    safe_body = max(body, 0.015) # 極小実体による倍率暴走防止
+    safe_body = max(body, 0.015) # 最小実体幅を確保
 
-    signals = []
-    log_signals = []
+    signals, log_signals = [], []
     max_priority = 0
 
     def add_signal(wick_len, label, is_buy):
         nonlocal max_priority
         ratio = wick_len / safe_body
         direction = "下ヒゲ" if is_buy else "上ヒゲ"
-        
-        if ratio >= 1.8:
-            p_val, prefix = 2, "🚨 **【強烈】**"
-        elif ratio >= 0.9:
-            p_val, prefix = 1, "⚠️ **【注目】**"
-        else:
-            p_val, prefix = 0, "🔍 **【要チェック】**"
-
+        if ratio >= 1.8: p, pref = 2, "🚨 **【強烈】**"
+        elif ratio >= 0.9: p, pref = 1, "⚠️ **【注目】**"
+        else: p, pref = 0, "🔍 **【要チェック】**"
         log_signals.append(f"{label}({direction}{ratio:.1f}倍)")
-        signals.append(f"{prefix}{label}\n　　└ {direction} {ratio:.1f}倍")
-        max_priority = max(max_priority, p_val)
+        signals.append(f"{pref}{label}\n　　└ {direction} {ratio:.1f}倍")
+        max_priority = max(max_priority, p)
 
-    # --- 階層型シグナル判定ロジック ---
+    # 判定
     rsi_val = target['RSI']
-    
-    # 上ヒゲ（売り条件）: RSI60以上またはBB2σ超過
     if upper_wick >= safe_body * 0.7:
-        if rsi_val >= 65 or h >= target['Upper']:
-            add_signal(upper_wick, "天井反転/戻り売り", False)
-        elif rsi_val >= 60:
-            add_signal(upper_wick, "反転予兆(RSI60超)", False)
-
-    # 下ヒゲ（買い条件）: RSI40以下またはBB-2σ超過
+        if rsi_val >= 65 or h >= target['Upper']: add_signal(upper_wick, "天井反転/戻り売り", False)
+        elif rsi_val >= 60: add_signal(upper_wick, "反転予兆(RSI60超)", False)
     if lower_wick >= safe_body * 0.7:
-        if rsi_val <= 35 or l <= target['Lower']:
-            add_signal(lower_wick, "底値反発/押し目買い", True)
-        elif rsi_val <= 40:
-            add_signal(lower_wick, "反発予兆(RSI40以下)", True)
+        if rsi_val <= 35 or l <= target['Lower']: add_signal(lower_wick, "底値反発/押し目買い", True)
+        elif rsi_val <= 40: add_signal(lower_wick, "反発予兆(RSI40以下)", True)
 
-    # --- 共通ログデータ作成 ---
-    pos_pct = (c - target['Lower']) / (target['Upper'] - target['Lower']) * 100
-    ma_diff = ((c - target['MA20']) / target['MA20']) * 100
-
+    # 記録データ
     log_data = {
-        "date": f"{data_date_str}({weekday_str})",
+        "date": f"{target.name.strftime('%Y/%m/%d')}({['月','火','水','木','金','土','日'][target.name.weekday()]})",
         "price": round(c, 2),
         "change": round(c - prev['Close'], 2),
         "trend": trend_type,
         "rsi": round(rsi_val, 1) if not np.isnan(rsi_val) else 50,
         "ma_diff": round(ma_diff, 2),
-        "bb_pos": round(pos_pct, 1),
+        "bb_pos": round((c - target['Lower']) / (target['Upper'] - target['Lower']) * 100, 1),
         "signal": ", ".join(log_signals) if log_signals else "なし"
     }
 
-    # 【重要】シグナルの有無に関わらず、毎日の統計として必ず記録
     send_spreadsheet(log_data)
-
-    # Discordは「何かがあったとき」だけ通知
     if signals:
         emoji = "🚨" if max_priority == 2 else "⚠️" if max_priority == 1 else "🔍"
-        full_msg = (
-            f"{emoji} **USD/JPY 階層型マーケット診断**\n"
-            f"📅 {log_data['date']} 確定\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"💰 **価格**: {c:.2f}円 ({log_data['change']:+.2f})\n"
-            f"🌊 **地合い**: {trend_type} (MA傾き: {ma_slope:+.3f})\n"
-            f"📈 **RSI**: {log_data['rsi']} / **MA乖離**: {log_data['ma_diff']:+.2f}%\n"
-            f"🌐 **BB位置**: {log_data['bb_pos']}% (2σ基準)\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"【シグナル検出】\n" + "\n".join(signals)
-        )
-        send_discord(full_msg)
-    else:
-        print(f"{data_date_str}: シグナルなし(RSI:{rsi_val:.1f})。スプレッドシートのみ記録完了。")
+        send_discord(f"{emoji} **USD/JPY 診断**\n📅 {log_data['date']}\n💰 {c:.2f}円\n📈 RSI: {log_data['rsi']} / 乖離: {log_data['ma_diff']}%\n" + "\n".join(signals))
 
 if __name__ == "__main__":
     analyze_market()
