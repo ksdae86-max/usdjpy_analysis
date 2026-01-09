@@ -5,94 +5,112 @@ import numpy as np
 import yfinance as yf
 from datetime import datetime
 
-# --- 通知・記録用関数 (変更なし) ---
+# --- 通知・記録用関数 ---
 def send_discord(message):
     webhook_url = os.getenv("DISCORD_WEBHOOK")
     if not webhook_url: return
     try:
         res = requests.post(webhook_url, json={"content": message}, timeout=15)
         res.raise_for_status()
-    except Exception as e: print(f"Discord送信失敗: {e}")
+    except Exception as e:
+        print(f"Discord送信失敗: {e}")
 
 def send_spreadsheet(data):
     sheet_url = os.getenv("GSHEET_URL")
-    if not sheet_url: return
+    if not sheet_url:
+        print("GSHEET_URL未設定のため記録をスキップします。")
+        return
     try:
+        # 重複防止やログの連続性のために必ず送信
         res = requests.post(sheet_url, json=data, timeout=15)
         print(f"スプレッドシート送信結果: {res.text}")
-    except Exception as e: print(f"スプレッドシート送信失敗: {e}")
+    except Exception as e:
+        print(f"スプレッドシート送信失敗: {e}")
 
 def analyze_market():
-    # --- データ取得 (yfinanceに変更) ---
+    # --- データ取得 (yfinanceで高速・確実化) ---
     try:
-        # ドル円のシンボルは "JPY=X"
         ticker = yf.Ticker("JPY=X")
-        # 過去30日分の「日足」を取得 (インジケーター計算のため30日程度確保)
-        df = ticker.history(period="30d", interval="1d")
-        
+        # インジケーター計算用に過去40日分取得
+        df = ticker.history(period="40d", interval="1d")
         if df.empty:
-            print("yfinanceからのデータ取得に失敗しました。")
+            print("データが空です。取得に失敗しました。")
             return
-
-        # 列名を統一 (Open, High, Low, Close)
+        
         df = df[['Open', 'High', 'Low', 'Close']]
         df.index = pd.to_datetime(df.index)
         df = df.sort_index()
     except Exception as e:
-        print(f"データ取得失敗: {e}"); return
+        print(f"yfinance取得失敗: {e}")
+        return
 
-    # --- インジケーター計算 (変更なし) ---
+    # --- インジケーター計算 (RSI14 / MA20 / BB2σ) ---
     window = 14
     delta = df['Close'].diff()
     gain = delta.clip(lower=0).ewm(alpha=1/window, adjust=False).mean()
     loss = (-delta.clip(upper=0)).ewm(alpha=1/window, adjust=False).mean()
     df['RSI'] = 100 - (100 / (1 + (gain / loss.replace(0, np.nan))))
+
     df['MA20'] = df['Close'].rolling(window=20).mean()
     df['STD'] = df['Close'].rolling(window=20).std()
     df['Upper'] = df['MA20'] + (df['STD'] * 2)
     df['Lower'] = df['MA20'] - (df['STD'] * 2)
 
-    # --- ターゲット抽出 ---
+    # --- ターゲット抽出 (確定した最新の日足) ---
     target = df.iloc[-1]
     prev = df.iloc[-2]
-    
-    # 取得データの最新日付を確認
-    data_date_str = target.name.strftime('%Y/%m/%d')
-    print(f"分析対象の日付: {data_date_str}")
-
     o, h, l, c = target['Open'], target['High'], target['Low'], target['Close']
+    data_date_str = target.name.strftime('%Y/%m/%d')
     weekday_str = ["月", "火", "水", "木", "金", "土", "日"][target.name.weekday()]
     
+    # トレンド診断
     ma_slope = (target['MA20'] - df['MA20'].iloc[-5]) / 5
     trend_type = "📈上昇" if ma_slope > 0.02 else "📉下落" if ma_slope < -0.02 else "➡️横ばい"
 
-    body, upper_wick, lower_wick = abs(o - c), h - max(o, c), min(o, c) - l
-    safe_body = max(body, 0.015)
+    # ヒゲ判定用
+    body = abs(o - c)
+    upper_wick = h - max(o, c)
+    lower_wick = min(o, c) - l
+    safe_body = max(body, 0.015) # 極小実体による倍率暴走防止
 
-    signals, log_signals = [], []
+    signals = []
+    log_signals = []
     max_priority = 0
 
     def add_signal(wick_len, label, is_buy):
         nonlocal max_priority
         ratio = wick_len / safe_body
         direction = "下ヒゲ" if is_buy else "上ヒゲ"
-        if ratio >= 1.8: p_val, prefix = 2, "🚨 **【強烈】**"
-        elif ratio >= 0.9: p_val, prefix = 1, "⚠️ **【注目】**"
-        else: p_val, prefix = 0, "🔍 **【要チェック】**"
+        
+        if ratio >= 1.8:
+            p_val, prefix = 2, "🚨 **【強烈】**"
+        elif ratio >= 0.9:
+            p_val, prefix = 1, "⚠️ **【注目】**"
+        else:
+            p_val, prefix = 0, "🔍 **【要チェック】**"
+
         log_signals.append(f"{label}({direction}{ratio:.1f}倍)")
         signals.append(f"{prefix}{label}\n　　└ {direction} {ratio:.1f}倍")
         max_priority = max(max_priority, p_val)
 
-    # --- 条件判定 ---
+    # --- 階層型シグナル判定ロジック ---
     rsi_val = target['RSI']
+    
+    # 上ヒゲ（売り条件）: RSI60以上またはBB2σ超過
     if upper_wick >= safe_body * 0.7:
-        if rsi_val >= 65 or h >= target['Upper']: add_signal(upper_wick, "天井反転/戻り売り", False)
-        elif rsi_val >= 60: add_signal(upper_wick, "反転予兆(RSI60超)", False)
-    if lower_wick >= safe_body * 0.7:
-        if rsi_val <= 35 or l <= target['Lower']: add_signal(lower_wick, "底値反発/押し目買い", True)
-        elif rsi_val <= 40: add_signal(lower_wick, "反発予兆(RSI40以下)", True)
+        if rsi_val >= 65 or h >= target['Upper']:
+            add_signal(upper_wick, "天井反転/戻り売り", False)
+        elif rsi_val >= 60:
+            add_signal(upper_wick, "反転予兆(RSI60超)", False)
 
-    # --- ログデータ作成 ---
+    # 下ヒゲ（買い条件）: RSI40以下またはBB-2σ超過
+    if lower_wick >= safe_body * 0.7:
+        if rsi_val <= 35 or l <= target['Lower']:
+            add_signal(lower_wick, "底値反発/押し目買い", True)
+        elif rsi_val <= 40:
+            add_signal(lower_wick, "反発予兆(RSI40以下)", True)
+
+    # --- 共通ログデータ作成 ---
     pos_pct = (c - target['Lower']) / (target['Upper'] - target['Lower']) * 100
     ma_diff = ((c - target['MA20']) / target['MA20']) * 100
 
@@ -107,8 +125,10 @@ def analyze_market():
         "signal": ", ".join(log_signals) if log_signals else "なし"
     }
 
+    # 【重要】シグナルの有無に関わらず、毎日の統計として必ず記録
     send_spreadsheet(log_data)
 
+    # Discordは「何かがあったとき」だけ通知
     if signals:
         emoji = "🚨" if max_priority == 2 else "⚠️" if max_priority == 1 else "🔍"
         full_msg = (
@@ -124,7 +144,7 @@ def analyze_market():
         )
         send_discord(full_msg)
     else:
-        print(f"{data_date_str}: シグナルなし(RSI:{rsi_val:.1f})。記録完了。")
+        print(f"{data_date_str}: シグナルなし(RSI:{rsi_val:.1f})。スプレッドシートのみ記録完了。")
 
 if __name__ == "__main__":
     analyze_market()
