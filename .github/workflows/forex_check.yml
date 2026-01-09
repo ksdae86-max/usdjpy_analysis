@@ -2,10 +2,10 @@ name: USD/JPY Market Analysis
 
 on:
   schedule:
-    # 日本時間 午前9:15に実行 (UTC 0:15)
-    # yfinanceにより米国市場クローズ(朝7-8時)直後の確定データを取得可能
-    - cron: '15 0 * * *'
-  workflow_dispatch: # 手動実行ボタンを有効化
+    # 日本時間 火曜日〜土曜日の午前9:15に実行 (UTC 0:15)
+    # これにより、月曜〜金曜の確定日足が重複なく記録されます
+    - cron: '15 0 * * 2-6'
+  workflow_dispatch: # 手動実行ボタン
 
 jobs:
   analyze:
@@ -17,18 +17,16 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          # Python 3.10以上にすることで、yfinance最新版のエラーを回避
+          # yfinanceの最新仕様に対応
           python-version: '3.10'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # yfinanceを含む必要ライブラリをインストール
           pip install requests pandas numpy yfinance
 
       - name: Run analysis
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           GSHEET_URL: ${{ secrets.GSHEET_URL }}
-        # 実行ファイル名を wick_detector.py に指定
         run: python wick_detector.py
