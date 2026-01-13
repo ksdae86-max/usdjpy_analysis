@@ -1,8 +1,8 @@
 /**
- * logic.js - Ultimate Evolution v10 (Full Integration)
- * ・Python版「倍率判定・トレンド・安全策」継承
- * ・週末ノイズ完全除去 (1h足スキャン)
+ * logic.js - Ultimate Evolution v11
+ * ・Mathオブジェクトの厳密適用（ReferenceError修正済）
  * ・最新ポジション利益監視 (20pips〜 / 10pips刻み)
+ * ・週末ノイズ完全除去 (1h足スキャン)
  */
 function executeMain() {
   const webhookUrl = PropertiesService.getScriptProperties().getProperty('DISCORD_URL');
@@ -21,7 +21,7 @@ function executeMain() {
     let c = null, trueStamp = 0;
     for (let i = stampsH.length - 1; i >= 0; i--) {
       let d = new Date(stampsH[i] * 1000);
-      // 土曜朝のクローズ値を金曜の確定値として採用
+      // 土曜朝のクローズ値を金曜の確定値として採用（日本時間）
       if (((d.getDay() === 6 && d.getHours() <= 7) || d.getDay() === 5) && qH.close[i] != null) {
         c = qH.close[i];
         let normalizedDate = new Date(stampsH[i] * 1000);
@@ -30,15 +30,15 @@ function executeMain() {
         break;
       }
     }
-    if (!c) throw new Error("終値特定失敗");
+    if (!c) throw new Error("終値の特定に失敗しました。");
     const dateStr = Utilities.formatDate(new Date(trueStamp), "JST", "yyyy/MM/dd(E)");
 
-    // --- 2. 指標計算 (Python版ロジックの精密移植) ---
+    // --- 2. 指標計算 (日足データによる分析) ---
     const resD = UrlFetchApp.fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=60d`);
     const jsonD = JSON.parse(resD.getContentText());
     const qD = jsonD.chart.result[0].indicators.quote[0];
     let cArr = qD.close.filter(v => v != null);
-    cArr[cArr.length - 1] = c; 
+    cArr[cArr.length - 1] = c; // 最新値を現在の実測値に差し替え
 
     const i = cArr.length - 1;
     const o = qD.open[i], h = qD.high[i], l = qD.low[i];
@@ -59,13 +59,13 @@ function executeMain() {
     const maSlope = (ma20 - (cArr.slice(i - 24, i - 4).reduce((a, b) => a + b) / 20)) / 5;
     const trendType = maSlope > 0.02 ? "📈上昇" : maSlope < -0.02 ? "📉下落" : "➡️横ばい";
 
-    // --- 3. ポジション利益監視 (20pips/10pips刻み) ---
+    // --- 3. ポジション利益監視 (20pips/10pips刻み / 最新行のみ) ---
     if (posSheet) {
       const posLastRow = posSheet.getLastRow();
       if (posLastRow >= 2) {
         const posData = posSheet.getRange(posLastRow, 1, 1, 3).getValues()[0];
         const entryPrice = posData[0];
-        const side = posData[1]; // "L" or "S"
+        const side = posData[1]; 
         const lastNotified = posData[2] || 0;
 
         if (entryPrice && side) {
@@ -92,11 +92,11 @@ function executeMain() {
       }
     }
 
-    // --- 4. ヒゲ判定と診断通知 ---
+    // --- 4. ヒゲ判定と診断通知 (Mathオブジェクトを修正) ---
     const body = Math.abs(o - c);
     const safeBody = Math.max(body, 0.015);
     const upperWick = h - Math.max(o, c);
-    const lowerWick = min(o, c) - l; // ヘルパーが必要なら Math.min
+    const lowerWick = Math.min(o, c) - l; // Math.min に修正済み
     
     let signals = [], maxPriority = 0;
     const checkWick = (wickLen, label, isLower) => {
@@ -111,13 +111,17 @@ function executeMain() {
     if (upperWick >= safeBody * 0.7 && (rsi >= 60 || h >= (ma20 + sd * 2))) checkWick(upperWick, "天井反転", false);
     if (lowerWick >= safeBody * 0.7 && (rsi <= 40 || l <= (ma20 - sd * 2))) checkWick(lowerWick, "底値反発", true);
 
-    // 重複チェック後に記録と通知
+    // 重複チェック後の記録
     const isDup = logSheet.getLastRow() > 0 && logSheet.getRange(logSheet.getLastRow(), 1).getDisplayValue() === dateStr;
     
     if (!isDup) {
-      logSheet.appendRow([dateStr, c.toFixed(3), (c - cArr[i-1]).toFixed(3), trendType, rsi.toFixed(1), ((c - ma20)/ma20*100).toFixed(2), "v10判定", signals.join(", ")]);
+      logSheet.appendRow([
+        dateStr, c.toFixed(3), (c - cArr[i-1]).toFixed(3), trendType,
+        rsi.toFixed(1), ((c - ma20)/ma20*100).toFixed(2), "v11分析", signals.length > 0 ? signals.join(", ") : "なし"
+      ]);
     }
 
+    // シグナル通知（重複していない場合のみ送信）
     if (signals.length > 0 && !isDup) {
       const emoji = maxPriority === 2 ? "🚨" : maxPriority === 1 ? "⚠️" : "🔍";
       const msg = `${emoji} **USD/JPY 総合診断**\n📅 ${dateStr}\n💰 終値: ${c.toFixed(3)}円\n📈 トレンド: ${trendType}\n📊 RSI: ${rsi.toFixed(1)}\n\n` + signals.join("\n");
@@ -125,6 +129,6 @@ function executeMain() {
     }
 
   } catch (e) {
-    console.error("Error: " + e.toString());
+    console.error("ロジック実行エラー: " + e.toString());
   }
 }
