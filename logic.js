@@ -1,7 +1,6 @@
 /**
- * logic.js - Ultimate Evolution v12 (Stability Max)
- * ・Yahoo Finance 400エラー対策済 (range拡張 & エラーハンドリング)
- * ・Mathオブジェクト修正済 / ポジション最新行監視搭載
+ * logic.js - Debug Force v113
+ * 重複チェックを無効化し、強制的にスプレッドシートへ書き込みます。
  */
 function executeMain() {
   const webhookUrl = PropertiesService.getScriptProperties().getProperty('DISCORD_URL');
@@ -10,22 +9,19 @@ function executeMain() {
   const logSheet = ss.getSheets()[0]; 
   const posSheet = ss.getSheetByName("ポジション");
 
-  // API取得用ヘルパー関数（400エラー対策）
+  // API取得用ヘルパー関数
   const fetchYahoo = (url) => {
     const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
     if (res.getResponseCode() !== 200) {
-      console.warn("API警告: " + res.getResponseCode() + " - リトライ中...");
-      Utilities.sleep(1000); // 1秒待機してリトライ
+      Utilities.sleep(1000);
       return JSON.parse(UrlFetchApp.fetch(url).getContentText());
     }
     return JSON.parse(res.getContentText());
   };
 
   try {
-    // --- 1. 市場データの取得 (rangeを広げて安定化) ---
+    // --- 1. 市場データの取得 ---
     const jsonH = fetchYahoo(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1h&range=7d`);
-    if (!jsonH.chart || !jsonH.chart.result) throw new Error("1hデータ構造エラー");
-    
     const qH = jsonH.chart.result[0].indicators.quote[0];
     const stampsH = jsonH.chart.result[0].timestamp;
 
@@ -67,7 +63,7 @@ function executeMain() {
     const maSlope = (ma20 - (cArr.slice(i - 24, i - 4).reduce((a, b) => a + b) / 20)) / 5;
     const trendType = maSlope > 0.02 ? "📈上昇" : maSlope < -0.02 ? "📉下落" : "➡️横ばい";
 
-    // --- 3. ポジション利益監視 (最新行のみ) ---
+    // --- 3. ポジション利益監視 (最新行) ---
     if (posSheet) {
       const posLastRow = posSheet.getLastRow();
       if (posLastRow >= 2) {
@@ -106,31 +102,34 @@ function executeMain() {
     const upperWick = h - Math.max(o, c);
     const lowerWick = Math.min(o, c) - l;
     
-    let signals = [], maxPriority = 0;
+    let signals = [];
     const checkWick = (wickLen, label, isLower) => {
       const ratio = wickLen / safeBody;
       if (ratio < 0.7) return;
-      let p = ratio >= 1.8 ? 2 : ratio >= 0.9 ? 1 : 0;
-      let pref = p === 2 ? "🚨 **【強烈】** " : p === 1 ? "⚠️ **【注目】** " : "🔍 ";
-      signals.push(`${pref}${label}\n　　└ ${isLower ? "下ヒゲ" : "上ヒゲ"} ${ratio.toFixed(1)}倍`);
-      maxPriority = Math.max(maxPriority, p);
+      signals.push(`${label}\n　　└ ${isLower ? "下ヒゲ" : "上ヒゲ"} ${ratio.toFixed(1)}倍`);
     };
 
     if (upperWick >= safeBody * 0.7 && (rsi >= 60 || h >= (ma20 + sd * 2))) checkWick(upperWick, "天井反転", false);
     if (lowerWick >= safeBody * 0.7 && (rsi <= 40 || l <= (ma20 - sd * 2))) checkWick(lowerWick, "底値反発", true);
 
-    // --- 5. 記録と通知 ---
-    const isDup = logSheet.getLastRow() > 0 && logSheet.getRange(logSheet.getLastRow(), 1).getDisplayValue() === dateStr;
-    if (!isDup) {
-      logSheet.appendRow([dateStr, c.toFixed(3), (c - cArr[i-1]).toFixed(3), trendType, rsi.toFixed(1), ((c - ma20)/ma20*100).toFixed(2), "v12安定版", signals.length > 0 ? signals.join(", ") : "なし"]);
-    }
+    // --- 5. 強制記録（重複チェック無効化中） ---
+    logSheet.appendRow([
+      dateStr, 
+      c.toFixed(3), 
+      (c - cArr[i-1]).toFixed(3), 
+      trendType, 
+      rsi.toFixed(1), 
+      ((c - ma20)/ma20*100).toFixed(2), 
+      "Debug v13 実行済", 
+      signals.length > 0 ? signals.join(", ") : "なし"
+    ]);
 
-    if (signals.length > 0 && !isDup) {
+    if (signals.length > 0) {
       const msg = `🔍 **USD/JPY 総合診断**\n📅 ${dateStr}\n💰 終値: ${c.toFixed(3)}円\n📈 トレンド: ${trendType}\n\n` + signals.join("\n");
       UrlFetchApp.fetch(webhookUrl, {method: "post", contentType: "application/json", payload: JSON.stringify({content: msg})});
     }
 
   } catch (e) {
-    console.error("ロジック実行エラー: " + e.toString());
+    console.error("実行エラー: " + e.toString());
   }
 }
