@@ -10,8 +10,7 @@ function executeMain() {
   const logSheet = ss.getSheets()[0]; 
   const posSheet = ss.getSheetByName("ポジション");
 
-  // 【設定】シートに記録を行いたい時間（24時間表記）
-  // 9時半のトリガーに合わせて「9」に設定します
+  // 【設定】シートに記録を行いたい時間（9時台 = 9時00分〜59分）
   const TARGET_HOUR = 9; 
 
   const fetchYahoo = (url) => {
@@ -28,13 +27,13 @@ function executeMain() {
     const currentHour = now.getHours();
     const dateStr = Utilities.formatDate(now, "JST", "yyyy/MM/dd(E)");
 
-    // 1h足から最新価格を取得（常に最新で監視するため）
+    // 最新価格を取得（監視用）
     const jsonH = fetchYahoo(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1h&range=2d`);
     const qH = jsonH.chart.result[0].indicators.quote[0];
     const pricesH = qH.close.filter(v => v != null);
     const c = pricesH[pricesH.length - 1];
 
-    // --- 1. ポジション利益監視 (実行されるたびに毎回チェック) ---
+    // --- 1. ポジション利益監視 (1時間ごとのトリガー等のたびに毎回チェック) ---
     if (posSheet) {
       const posLastRow = posSheet.getLastRow();
       if (posLastRow >= 2) {
@@ -58,11 +57,10 @@ function executeMain() {
       }
     }
 
-    // --- 2. シートへの記録判定 (指定した時間帯のみ) ---
+    // --- 2. シートへの記録判定 (9時台のみ) ---
     const lastRow = logSheet.getLastRow();
     const isTodayAlreadyLogged = lastRow > 0 && logSheet.getRange(lastRow, 1).getDisplayValue() === dateStr;
 
-    // 指定の時間（9時台）かつ、まだ今日記録していなければ実行
     if (currentHour === TARGET_HOUR && !isTodayAlreadyLogged) {
       const jsonD = fetchYahoo(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=90d`);
       const qD = jsonD.chart.result[0].indicators.quote[0];
@@ -95,14 +93,15 @@ function executeMain() {
       if (upperWick >= safeBody * 0.7 && (rsi >= 60 || h >= (ma20 + sd * 2))) checkWick(upperWick, "天井反転", false);
       if (lowerWick >= safeBody * 0.7 && (rsi <= 40 || l <= (ma20 - sd * 2))) checkWick(lowerWick, "底値反発", true);
 
-      // 記録
       logSheet.appendRow([dateStr, c.toFixed(3), (c - cArr[i-1]).toFixed(3), trendType, rsi.toFixed(1), ((c - ma20)/ma20*100).toFixed(2), "9時定期記録", signals.length > 0 ? signals.join(", ") : "なし"]);
       
-      // 通知
       if (signals.length > 0) {
         const msg = `🔍 **定期診断(9時)** [${dateStr}]\n💰 ${c.toFixed(3)}円 / ${trendType}\n` + signals.join("\n");
         UrlFetchApp.fetch(webhookUrl, {method: "post", contentType: "application/json", payload: JSON.stringify({content: msg})});
       }
+      console.log("9時台のため記録を実行しました。");
+    } else {
+      console.log("記録時間外または記録済みです。監視のみ継続します。");
     }
   } catch (e) { console.error("実行エラー: " + e.toString()); }
 }
