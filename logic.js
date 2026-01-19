@@ -1,19 +1,17 @@
 /**
- * logic.js - MainHourly用ロジック (v31)
- * 出口戦略：固定pips(20/50/100) + 動的目安(MA20/直近高安)
+ * logic.js - GitHub最新版 (v32)
  */
 (function(scope) {
   scope.executeMainLogic = function(params) {
-    const { c, hArr, lArr, cArr, posSheet, webhookUrl } = params;
+    const { c, hArr, lArr, cArr, posSheet, logSheet, webhookUrl, now } = params;
     
-    // 指標計算
+    // 1. 利益更新・出口ナビゲート
     const ma20 = cArr.slice(-20).reduce((a, b) => a + b) / 20;
-    const recentHigh = Math.max(...hArr.slice(-24)); // 直近24時間の壁
+    const recentHigh = Math.max(...hArr.slice(-24));
     const recentLow = Math.min(...lArr.slice(-24));
 
     if (posSheet && posSheet.getLastRow() >= 2) {
       const values = posSheet.getRange(2, 1, posSheet.getLastRow() - 1, 4).getValues();
-      
       values.forEach((row, i) => {
         const [entry, side, lastNotified, status] = row;
         if (entry && side && !status) {
@@ -21,33 +19,34 @@
           const pips = isLong ? (c - entry) * 100 : (entry - c) * 100;
           let alerts = [];
 
-          // --- 固定pipsアドバイス ---
-          if (pips >= 20 && lastNotified < 20) alerts.push("🛡️ **20pips：同値撤退(SL)を設定し、負けをゼロにしてください**");
-          if (pips >= 50 && lastNotified < 50) alerts.push("📢 **50pips：半分利確を検討。精神的余裕を確保しましょう**");
-          if (pips >= 100 && lastNotified < 100) alerts.push("💰 **100pips：目標達成！利確を強く推奨します**");
+          if (pips >= 20 && lastNotified < 20) alerts.push("🛡️ **20pips：同値撤退(SL)推奨**");
+          if (pips >= 50 && lastNotified < 50) alerts.push("📢 **50pips：半分利確検討**");
+          if (pips >= 100 && lastNotified < 100) alerts.push("💰 **100pips：利確推奨**");
 
-          // --- 動的利確ナビ (利益10pips以上) ---
           if (pips > 10) {
-            if (isLong) {
-              if (c >= ma20 && entry < ma20) alerts.push("⚠️ **中心線(MA20)到達：一旦の利確ポイントです**");
-              if (c >= recentHigh * 0.999) alerts.push("📌 **直近高値接近：上値が重くなる可能性があります**");
-            } else {
-              if (c <= ma20 && entry > ma20) alerts.push("⚠️ **中心線(MA20)到達：一旦の利確ポイントです**");
-              if (c <= recentLow * 1.001) alerts.push("📌 **直近安値接近：下げ止まりに注意してください**");
-            }
+            if (isLong && c >= ma20 && entry < ma20) alerts.push("⚠️ **中心線(MA20)到達：利確ポイント**");
+            if (!isLong && c <= ma20 && entry > ma20) alerts.push("⚠️ **中心線(MA20)到達：利確ポイント**");
           }
 
           if (alerts.length > 0) {
-            const finalMsg = `💎 **ポジション管理：${side} (${entry.toFixed(3)})**\n${alerts.join("\n")}\n現在の損益: **+${pips.toFixed(1)} pips**`;
-            UrlFetchApp.fetch(webhookUrl, {
-              method: "post",
-              contentType: "application/json",
-              payload: JSON.stringify({ content: finalMsg })
-            });
+            const finalMsg = `💎 **出口ナビ：${side}**\n${alerts.join("\n")}\n損益: **+${pips.toFixed(1)} pips**`;
+            UrlFetchApp.fetch(webhookUrl, {method: "post", contentType: "application/json", payload: JSON.stringify({content: finalMsg})});
             posSheet.getRange(i + 2, 3).setValue(Math.floor(pips / 10) * 10);
           }
         }
       });
+    }
+
+    // 2. 9時台の自動記録 (厳密な8列出力)
+    if (now.getHours() === 9) {
+      const dateStr = Utilities.formatDate(now, "JST", "yyyy/MM/dd(E)");
+      const lastRow = logSheet.getLastRow();
+      const lastDate = lastRow > 0 ? logSheet.getRange(lastRow, 1).getDisplayValue() : "";
+      
+      if (lastDate !== dateStr) {
+        // [日付, 価格, 種類, 判定, 損益, 方向, 入口, 備考] の8列
+        logSheet.appendRow([dateStr, c.toFixed(3), "Auto", "判定中", "-", "-", "-", "なし"]);
+      }
     }
   };
 })(this);
