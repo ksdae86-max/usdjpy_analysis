@@ -32,15 +32,30 @@
       });
     }
 
-    // 2. 9時台の自動記録（8列に厳格対応）
+    // 2. 9時台の自動記録（8列の指定範囲に直接書き込む方式に変更）
     if (now.getHours() === 9) {
       const dateStr = Utilities.formatDate(now, "JST", "yyyy/MM/dd(E)");
       const lastRow = logSheet.getLastRow();
+      
+      // A列（1列目）の最後の値を取得
       const lastDate = lastRow > 0 ? logSheet.getRange(lastRow, 1).getDisplayValue() : "";
       
+      // 同じ日付がなければ新しく書き込む
       if (lastDate !== dateStr) {
-        // [日付, 価格, 種類, 判定, 損益, 方向, 入口, 備考] の計8列
-        logSheet.appendRow([dateStr, c.toFixed(3), "Auto", "判定中", "-", "-", "-", "なし"]);
+        // [日付, 価格, 種類, 判定, 損益, 方向, 入口, 備考]
+        const rowData = [
+          dateStr,        // A列
+          c.toFixed(3),   // B列
+          "Auto",         // C列
+          "判定中",       // D列
+          "-",            // E列
+          "-",            // F列
+          "-",            // G列
+          "なし"          // H列
+        ];
+        
+        // appendRowではなく、範囲を指定してセットすることでズレを防止
+        logSheet.getRange(lastRow + 1, 1, 1, 8).setValues([rowData]);
       }
     }
   };
