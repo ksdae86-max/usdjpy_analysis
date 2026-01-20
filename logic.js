@@ -18,9 +18,9 @@ function executeMainLogic(params) {
           const pips = isLong ? (c - entry) * 100 : (entry - c) * 100;
           let alerts = [];
 
-          if (pips >= 20 && lastNotified < 20) alerts.push("🛡️ **20pips：同値撤退(SL)推奨**");
+          if (pips >= 20 && lastNotified < 20) alerts.push("🛡️ **20pips：建値撤退推奨**");
           if (pips >= 50 && lastNotified < 50) alerts.push("📢 **50pips：半分利確検討**");
-          if (pips >= 100 && lastNotified < 100) alerts.push("💰 **100pips：利確推奨**");
+          if (pips >= 100 && lastNotified < 100) alerts.push("💰 **100pips：全利確推奨**");
 
           if (pips > 10) {
             if (isLong && c >= ma20 && entry < ma20) alerts.push("⚠️ **中心線(MA20)到達**");
@@ -37,7 +37,7 @@ function executeMainLogic(params) {
     } catch(e) { console.error("Pos Error: " + e.toString()); }
   }
 
-  // --- 2. データ更新（最終行に追記 ＆ RSI計算） ---
+  // --- 2. データ更新（シグナル判定ロジック追加） ---
   try {
     const slice20 = cArr.slice(-20);
     const ma20 = slice20.reduce((a, b) => a + b) / 20;
@@ -51,7 +51,7 @@ function executeMainLogic(params) {
     const prevMa20 = cArr.slice(-21, -1).reduce((a, b) => a + b) / 20;
     const trend = (ma20 > prevMa20 + 0.005) ? "上昇" : (ma20 < prevMa20 - 0.005) ? "下落" : "横ばい";
 
-    // --- RSI計算 (14日間) ---
+    // RSI計算
     let rsiValue = "50.0";
     let upSum = 0, downSum = 0;
     for (let i = cArr.length - 14; i < cArr.length; i++) {
@@ -62,26 +62,20 @@ function executeMainLogic(params) {
       rsiValue = (upSum / (upSum + downSum) * 100).toFixed(1);
     }
 
-    // --- 最終行を取得して、その「次の行」に書き込む ---
+    // --- シグナル判定のロジック ---
+    let signal = "様子見";
+    const rsiNum = parseFloat(rsiValue);
+    const bbNum = parseFloat(bbPos);
+
+    if (rsiNum > 70 || bbNum > 2.0) signal = "買われすぎ";
+    else if (rsiNum < 30 || bbNum < -2.0) signal = "売られすぎ";
+    else if (trend === "上昇" && bbNum < 0) signal = "押し目買い圏";
+    else if (trend === "下落" && bbNum > 0) signal = "戻り売り圏";
+
     const lastRow = logSheet.getLastRow();
-    const targetRow = lastRow + 1;
+    const logData = [dateStr, c.toFixed(3), dayChange, trend, rsiValue, maDiff, bbPos, signal];
     
-    // シート項目順: 日付, 価格, 前日比, トレンド, RSI, MA乖離, BB位置, シグナル
-    const logData = [
-      dateStr,      // A列
-      c.toFixed(3), // B列
-      dayChange,    // C列
-      trend,        // D列
-      rsiValue,     // E列
-      maDiff,       // F列
-      bbPos,        // G列
-      "記録完了"    // H列
-    ];
-    
-    // A列からH列まで(8列分)を、新しい行に書き込む
-    logSheet.getRange(targetRow, 1, 1, 8).clearFormat().setValues([logData]);
-    
-    console.log("最終行 " + targetRow + " に追記完了。RSI: " + rsiValue);
+    logSheet.getRange(lastRow + 1, 1, 1, 8).clearFormat().setValues([logData]);
     
   } catch(e) { console.error("Log Error: " + e.toString()); }
 }
