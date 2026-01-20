@@ -1,4 +1,6 @@
-// scopeなどの複雑な囲いを無くし、直接関数を定義します
+/**
+ * logic.js
+ */
 function executeMainLogic(params) {
   const { c, cArr, posSheet, logSheet, webhookUrl, now } = params;
   
@@ -16,9 +18,9 @@ function executeMainLogic(params) {
           const pips = isLong ? (c - entry) * 100 : (entry - c) * 100;
           let alerts = [];
 
-          if (pips >= 20 && lastNotified < 20) alerts.push("🛡️ **20pips：建値撤退推奨**");
+          if (pips >= 20 && lastNotified < 20) alerts.push("🛡️ **20pips：同値撤退(SL)推奨**");
           if (pips >= 50 && lastNotified < 50) alerts.push("📢 **50pips：半分利確検討**");
-          if (pips >= 100 && lastNotified < 100) alerts.push("💰 **100pips：全利確推奨**");
+          if (pips >= 100 && lastNotified < 100) alerts.push("💰 **100pips：利確推奨**");
 
           if (pips > 10) {
             if (isLong && c >= ma20 && entry < ma20) alerts.push("⚠️ **中心線(MA20)到達**");
@@ -35,7 +37,7 @@ function executeMainLogic(params) {
     } catch(e) { console.error("Pos Error: " + e.toString()); }
   }
 
-  // --- 2. データ更新（シート1の最終行に履歴を追記） ---
+  // --- 2. データ更新（最終行に追記 ＆ RSI計算） ---
   try {
     const slice20 = cArr.slice(-20);
     const ma20 = slice20.reduce((a, b) => a + b) / 20;
@@ -49,18 +51,37 @@ function executeMainLogic(params) {
     const prevMa20 = cArr.slice(-21, -1).reduce((a, b) => a + b) / 20;
     const trend = (ma20 > prevMa20 + 0.005) ? "上昇" : (ma20 < prevMa20 - 0.005) ? "下落" : "横ばい";
 
-    // RSI
-    let upAvg = 0, downAvg = 0;
+    // --- RSI計算 (14日間) ---
+    let rsiValue = "50.0";
+    let upSum = 0, downSum = 0;
     for (let i = cArr.length - 14; i < cArr.length; i++) {
       let diff = cArr[i] - cArr[i-1];
-      if (diff > 0) upAvg += diff; else downAvg -= diff;
+      if (diff > 0) upSum += diff; else downSum -= diff;
     }
-    const rsiValue = (upAvg + downAvg === 0) ? "50.0" : (upAvg / (upAvg + downAvg) * 100).toFixed(1);
+    if (upSum + downSum !== 0) {
+      rsiValue = (upSum / (upSum + downSum) * 100).toFixed(1);
+    }
 
+    // --- 最終行を取得して、その「次の行」に書き込む ---
     const lastRow = logSheet.getLastRow();
-    const logData = [dateStr, c.toFixed(3), dayChange, trend, rsiValue, maDiff, bbPos, "記録完了"];
+    const targetRow = lastRow + 1;
     
-    logSheet.getRange(lastRow + 1, 1, 1, 8).clearFormat().setValues([logData]);
+    // シート項目順: 日付, 価格, 前日比, トレンド, RSI, MA乖離, BB位置, シグナル
+    const logData = [
+      dateStr,      // A列
+      c.toFixed(3), // B列
+      dayChange,    // C列
+      trend,        // D列
+      rsiValue,     // E列
+      maDiff,       // F列
+      bbPos,        // G列
+      "記録完了"    // H列
+    ];
+    
+    // A列からH列まで(8列分)を、新しい行に書き込む
+    logSheet.getRange(targetRow, 1, 1, 8).clearFormat().setValues([logData]);
+    
+    console.log("最終行 " + targetRow + " に追記完了。RSI: " + rsiValue);
     
   } catch(e) { console.error("Log Error: " + e.toString()); }
 }
