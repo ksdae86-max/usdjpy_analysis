@@ -1,51 +1,71 @@
-/**
- * MainHourly.gs
- * GitHubから最新ロジックを読み込み、シート更新とポジション監視を実行します。
- */
-function runAnalysis() {
-  const now = new Date();
-  // 土日は実行しない
-  if (now.getDay() === 0 || now.getDay() === 6) return; 
-
-  // キャッシュ回避のためタイムスタンプを付与
-  const GITHUB_RAW_URL = "https://raw.githubusercontent.com/ksdae86-max/usdjpy_analysis/refs/heads/main/logic.js?t=" + now.getTime();
-  
-  try {
-    const response = UrlFetchApp.fetch(GITHUB_RAW_URL, { "muteHttpExceptions": true });
-    if (response.getResponseCode() !== 200) throw new Error("GitHub接続失敗");
-
-    const scriptText = response.getContentText();
-    eval(scriptText); // GitHubのコードを読み込み
-
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const res = UrlFetchApp.fetch("https://query1.finance.yahoo.com/v8/finance/chart/JPY=X?interval=1h&range=5d");
-    const q = JSON.parse(res.getContentText()).chart.result[0].indicators.quote[0];
-    const cArr = q.close.filter(v => v != null);
-
-    // シート指定
-    const logSheet = ss.getSheetByName("シート1");
-    const posSheet = ss.getSheetByName("ポジション");
-
-    if (!logSheet) throw new Error("「シート1」が見つかりません");
-
-    const params = {
-      c: cArr[cArr.length - 1],
-      cArr: cArr,
-      hArr: q.high.filter(v => v != null),
-      lArr: q.low.filter(v => v != null),
-      posSheet: posSheet,
-      logSheet: logSheet, 
-      webhookUrl: PropertiesService.getScriptProperties().getProperty('DISCORD_URL'),
-      now: now 
-    };
-
-    // GitHub側のメインロジック(executeMainLogic)を実行
-    executeMainLogic(params);
-    console.log("正常終了: 価格 " + params.c);
+(function(scope) {
+  scope.executeMainLogic = function(params) {
+    const { c, cArr, posSheet, logSheet, webhookUrl, now } = params;
     
-  } catch (e) {
-    console.error("Fatal Error: " + e.toString());
-    const url = PropertiesService.getScriptProperties().getProperty('DISCORD_URL');
-    if (url) UrlFetchApp.fetch(url, {method:"post", contentType:"application/json", payload:JSON.stringify({content:"🚨 GAS実行エラー: " + e.toString()})});
-  }
-}
+    // --- 1. ポジション管理（出口ナビ） ---
+    if (posSheet && posSheet.getLastRow() >= 2) {
+      try {
+        const values = posSheet.getRange(2, 1, posSheet.getLastRow() - 1, 4).getValues();
+        const slice20 = cArr.slice(-20);
+        const ma20 = slice20.reduce((a, b) => a + b) / 20;
+
+        values.forEach((row, i) => {
+          const [entry, side, lastNotified, status] = row;
+          if (entry && side && !status) {
+            const isLong = (side === "L" || side === "買い");
+            const pips = isLong ? (c - entry) * 100 : (entry - c) * 100;
+            let alerts = [];
+
+            if (pips >= 20 && lastNotified < 20) alerts.push("🛡️ **20pips：同値撤退(SL)推奨**");
+            if (pips >= 50 && lastNotified < 50) alerts.push("📢 **50pips：半分利確検討**");
+            if (pips >= 100 && lastNotified < 100) alerts.push("💰 **100pips：利確推奨**");
+
+            if (pips > 10) {
+              if (isLong && c >= ma20 && entry < ma20) alerts.push("⚠️ **中心線(MA20)到達：利確ポイント**");
+              if (!isLong && c <= ma20 && entry > ma20) alerts.push("⚠️ **中心線(MA20)到達：利確ポイント**");
+            }
+
+            if (alerts.length > 0) {
+              const finalMsg = `💎 **出口ナビ：${side} (${entry.toFixed(3)})**\n${alerts.join("\n")}\n損益: **+${pips.toFixed(1)} pips**`;
+              UrlFetchApp.fetch(webhookUrl, {method: "post", contentType: "application/json", payload: JSON.stringify({content: finalMsg})});
+              posSheet.getRange(i + 2, 3).setValue(Math.floor(pips / 10) * 10);
+            }
+          }
+        });
+      } catch(e) { console.error("Pos Error: " + e.toString()); }
+    }
+
+    // --- 2. データ更新（シート1の最終行に履歴を追記） ---
+    try {
+      const slice20 = cArr.slice(-20);
+      const ma20 = slice20.reduce((a, b) => a + b) / 20;
+      const sd = Math.sqrt(slice20.reduce((s, v) => s + Math.pow(v - ma20, 2), 0) / 20);
+      const bbPos = ((c - ma20) / sd).toFixed(2);
+      const maDiff = (c - ma20).toFixed(3);
+      const prevDayC = cArr[cArr.length - 25] || cArr[0];
+      const dayChange = (c - prevDayC).toFixed(3);
+      const dateStr = Utilities.formatDate(now, "JST", "yyyy/MM/dd(E) HH:mm");
+      
+      const prevMa20 = cArr.slice(-21, -1).reduce((a, b) => a + b) / 20;
+      const trend = (ma20 > prevMa20 + 0.005) ? "上昇" : (ma20 < prevMa20 - 0.005) ? "下落" : "横ばい";
+
+      // RSI (14)
+      let upAvg = 0, downAvg = 0;
+      for (let i = cArr.length - 14; i < cArr.length; i++) {
+        let diff = cArr[i] - cArr[i-1];
+        if (diff > 0) upAvg += diff; else downAvg -= diff;
+      }
+      const rsiValue = (upAvg + downAvg === 0) ? "50.0" : (upAvg / (upAvg + downAvg) * 100).toFixed(1);
+
+      // 最終行の次に追記
+      const lastRow = logSheet.getLastRow();
+      const targetRow = lastRow + 1;
+      
+      // シート項目: 日付, 価格, 前日比, トレンド, RSI, MA乖離, BB位置, シグナル
+      const logData = [dateStr, c.toFixed(3), dayChange, trend, rsiValue, maDiff, bbPos, "記録完了"];
+      
+      logSheet.getRange(targetRow, 1, 1, 8).clearFormat().setValues([logData]);
+      
+    } catch(e) { console.error("Log Error: " + e.toString()); }
+  };
+})(this);
