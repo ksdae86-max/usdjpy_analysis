@@ -1,95 +1,78 @@
 /**
- * logic.js - 決済監視 & 朝9時限定記録版
+ * logic.js - [1h] 決済監視 ＆ 朝9時データ蓄積
  */
 function executeMainLogic(params) {
   const { c, cArr, posSheet, logSheet, webhookUrl, now } = params;
+  const currentPrice = parseFloat(c);
 
-  // --- 1. 決済監視 & 含み益通知 (毎時実行) ---
-  const data = posSheet.getDataRange().getValues();
-  let activePosition = null;
-  for (let i = 1; i < data.length; i++) {
-    if (!data[i][3]) {
-      activePosition = { row: i + 1, entryPrice: parseFloat(data[i][0]), side: data[i][1] };
+  // --- [1] 決済監視 (毎時実行) ---
+  const posData = posSheet.getDataRange().getValues();
+  let activePos = null;
+  for (let i = 1; i < posData.length; i++) {
+    if (!posData[i][3]) { // D列が未入力＝保有中
+      activePos = { row: i + 1, entry: parseFloat(posData[i][0]), side: posData[i][1] };
       break;
     }
   }
 
-  if (activePosition) {
-    const currentPrice = parseFloat(c);
-    const entryPrice = activePosition.entryPrice;
-    const side = activePosition.side;
-    let profitPips = (side === "L") ? (currentPrice - entryPrice) : (entryPrice - currentPrice);
-    profitPips = profitPips * 100;
+  if (activePos) {
+    const pips = (activePos.side === "L" ? (currentPrice - activePos.entry) : (activePos.entry - activePos.currentPrice)) * 100;
+    let alertMsg = "";
 
-    // 含み益アラート (20pips以上)
-    if (profitPips > 20 || profitPips < -15) {
-      sendDiscordNotification(webhookUrl, `【監視】損益: ${profitPips.toFixed(1)} pips (${currentPrice.toFixed(3)})`);
-    }
+    // A. 利益・損失の絶対値監視 (25pips / -15pips)
+    if (pips > 25 || pips < -15) alertMsg = `【指値付近】損益: ${pips.toFixed(1)} pips (${currentPrice.toFixed(3)})`;
 
-    // MA20タッチ判定
+    // B. MA20タッチ監視 (出口シグナル)
     if (cArr && cArr.length >= 20) {
       const ma20 = cArr.slice(-20).reduce((a, b) => a + b, 0) / 20;
-      const diff = currentPrice - ma20;
-      if ((side === "L" && diff < 0) || (side === "S" && diff > 0)) {
-        sendDiscordNotification(webhookUrl, `【MAタッチ】決済検討: 価格 ${currentPrice.toFixed(3)} / MA ${ma20.toFixed(3)}`);
+      if ((activePos.side === "L" && currentPrice < ma20) || (activePos.side === "S" && currentPrice > ma20)) {
+        alertMsg = `【MA20タッチ】決済検討: 価格(${currentPrice.toFixed(3)})が平均をクロス。`;
       }
     }
+    if (alertMsg) sendDiscord(webhookUrl, alertMsg);
   }
 
-  // --- 2. 朝9時台限定の記録処理 ---
-  // now.getHours() が 9 の時だけ実行
+  // --- [2] 朝9時限定：詳細データ記録 (日次ログ) ---
   if (now.getHours() === 9 && logSheet) {
-    try {
-      if (!cArr || cArr.length < 20) return;
+    if (!cArr || cArr.length < 24) return;
 
-      const last20 = cArr.slice(-20);
-      const ma20 = last20.reduce((a, b) => a + b, 0) / 20;
-      
-      // RSI (簡易計算)
-      let ups = 0, downs = 0;
-      for (let i = 1; i < 14; i++) {
-        const diff = cArr[cArr.length - i] - cArr[cArr.length - i - 1];
-        if (diff > 0) ups += diff; else downs -= diff;
-      }
-      const rsi = (ups / (ups + downs)) * 100;
-
-      // BB位置 / MA乖離
-      const squareDiffs = last20.map(v => Math.pow(v - ma20, 2));
-      const stdDev = Math.sqrt(squareDiffs.reduce((a, b) => a + b, 0) / 20);
-      const sigmaPos = (c - ma20) / stdDev;
-      const kairi = c - ma20;
-
-      // 前日比 (24時間前との差)
-      const diffYesterday = cArr.length >= 24 ? (c - cArr[cArr.length - 24]) : 0;
-
-      // シグナル判定
-      let signal = "様子見";
-      if (sigmaPos > 1.5) signal = "売り検討";
-      if (sigmaPos < -1.5) signal = "買い検討";
-
-      // シートへ記録
-      logSheet.appendRow([
-        Utilities.formatDate(now, "JST", "yyyy/MM/dd"), // 日付
-        c.toFixed(3),        // 価格
-        diffYesterday.toFixed(3), // 前日比
-        sigmaPos > 0 ? "上昇" : "下落", // トレンド (簡易)
-        rsi.toFixed(1),      // RSI
-        kairi.toFixed(3),    // MA乖離
-        sigmaPos.toFixed(2) + "σ", // BB位置
-        signal               // シグナル
-      ]);
-    } catch (e) {
-      console.error("9時記録エラー: " + e.toString());
+    // RSI(14) 精密計算
+    const rsiPeriod = 14;
+    let ups = 0, downs = 0;
+    for (let i = 0; i < rsiPeriod; i++) {
+      const diff = cArr[cArr.length - 1 - i] - cArr[cArr.length - 2 - i];
+      if (diff > 0) ups += diff; else downs -= diff;
     }
+    const rsi = (ups / (ups + downs)) * 100;
+
+    // BB / MA / 乖離
+    const ma20 = cArr.slice(-20).reduce((a, b) => a + b, 0) / 20;
+    const stdDev = Math.sqrt(cArr.slice(-20).map(v => Math.pow(v - ma20, 2)).reduce((a, b) => a + b, 0) / 20);
+    const sigmaPos = (currentPrice - ma20) / stdDev;
+    const kairi = currentPrice - ma20;
+    const prevDayPrice = cArr[cArr.length - 24]; // 24時間前
+    const diffDay = currentPrice - prevDayPrice;
+
+    // 判定シグナル
+    let signal = "様子見";
+    if (sigmaPos > 2.0 || rsi > 70) signal = "売り検討";
+    else if (sigmaPos < -2.0 || rsi < 30) signal = "買い検討";
+
+    // 記録項目：日付、価格、前日比、トレンド、RSI、MA乖離、BB位置、シグナル
+    logSheet.appendRow([
+      Utilities.formatDate(now, "JST", "yyyy/MM/dd"),
+      currentPrice.toFixed(3),
+      (diffDay > 0 ? "+" : "") + diffDay.toFixed(3),
+      sigmaPos > 0 ? "上昇" : "下落",
+      rsi.toFixed(1),
+      kairi.toFixed(3),
+      sigmaPos.toFixed(2) + "σ",
+      signal
+    ]);
   }
 }
 
-function sendDiscordNotification(url, message) {
+function sendDiscord(url, msg) {
   if (!url) return;
-  UrlFetchApp.fetch(url, {
-    "method": "post",
-    "contentType": "application/json",
-    "payload": JSON.stringify({ "content": message }),
-    "muteHttpExceptions": true
-  });
+  UrlFetchApp.fetch(url, { "method": "post", "contentType": "application/json", "payload": JSON.stringify({ "content": msg }), "muteHttpExceptions": true });
 }
