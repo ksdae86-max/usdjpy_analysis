@@ -1,97 +1,95 @@
 /**
- * logic.js - サバイバル・モード搭載版
- * Yahoo制限中（cArrなし）でも、Google価格で含み益を監視します。
+ * logic.js - 決済監視 & 朝9時限定記録版
  */
 function executeMainLogic(params) {
   const { c, cArr, posSheet, logSheet, webhookUrl, now } = params;
 
-  // 1. ポジション状況の確認（D列が空のものを探す）
+  // --- 1. 決済監視 & 含み益通知 (毎時実行) ---
   const data = posSheet.getDataRange().getValues();
   let activePosition = null;
-
   for (let i = 1; i < data.length; i++) {
-    if (!data[i][3]) { // D列（ステータス）が未入力
-      activePosition = {
-        row: i + 1,
-        entryPrice: data[i][0],
-        side: data[i][1]
-      };
-      break; 
+    if (!data[i][3]) {
+      activePosition = { row: i + 1, entryPrice: parseFloat(data[i][0]), side: data[i][1] };
+      break;
     }
   }
 
-  // 保有ポジションがなければ、これ以上やることはないので終了
-  if (!activePosition) return;
+  if (activePosition) {
+    const currentPrice = parseFloat(c);
+    const entryPrice = activePosition.entryPrice;
+    const side = activePosition.side;
+    let profitPips = (side === "L") ? (currentPrice - entryPrice) : (entryPrice - currentPrice);
+    profitPips = profitPips * 100;
 
-  // 2. 現在価格による利益計算（過去データ不要）
-  const currentPrice = c;
-  const entryPrice = activePosition.entryPrice;
-  const side = activePosition.side;
-  
-  // 利益(pips)計算。ドル円を想定（0.01 = 1pip）
-  let profitPips = (side === "L") ? (currentPrice - entryPrice) : (entryPrice - currentPrice);
-  profitPips = profitPips * 100; 
-
-  // --- 緊急通知判定（利確・損切り目安） ---
-  // 例：20pips以上の利益、または-15pips以上の損失で通知
-  if (profitPips > 20 || profitPips < -15) {
-    const statusEmoji = profitPips > 0 ? "💰" : "⚠️";
-    sendDiscordNotification(webhookUrl, 
-      `${statusEmoji} 【価格監視アラート】\n` +
-      `現在価格: ${currentPrice.toFixed(3)}\n` +
-      `保有: ${activePosition.row}行目 [${side}]\n` +
-      `損益: 約 ${profitPips.toFixed(1)} pips\n` +
-      `(備考: 現在API制限中のため、MA判定を除外して価格のみで監視中)`
-    );
-  }
-
-  // 3. MA20判定（ここから先は過去データが必要）
-  if (!cArr || cArr.length < 20) {
-    console.warn("過去データ不足のため、MA20判定をスキップします。価格監視は実行済み。");
-    return;
-  }
-
-  // --- 通常のMA20ロジック ---
-  try {
-    const last20 = cArr.slice(-20);
-    const ma20 = last20.reduce((a, b) => a + b, 0) / 20;
-
-    const diff = currentPrice - ma20;
-    // ロングでMAを下回った、またはショートでMAを上回った場合に通知
-    const isMaTouched = (side === "L" && diff < 0) || (side === "S" && diff > 0);
-
-    if (isMaTouched) {
-      sendDiscordNotification(webhookUrl, 
-        `【MA20タッチ】\n` +
-        `価格(${currentPrice.toFixed(3)})がMA20(${ma20.toFixed(3)})をクロスしました。\n` +
-        `決済を検討してください。`
-      );
+    // 含み益アラート (20pips以上)
+    if (profitPips > 20 || profitPips < -15) {
+      sendDiscordNotification(webhookUrl, `【監視】損益: ${profitPips.toFixed(1)} pips (${currentPrice.toFixed(3)})`);
     }
 
-    // ログ記録（データがある時のみ）
-    if (logSheet) {
-      logSheet.appendRow([now, currentPrice, ma20.toFixed(3), "保有中"]);
+    // MA20タッチ判定
+    if (cArr && cArr.length >= 20) {
+      const ma20 = cArr.slice(-20).reduce((a, b) => a + b, 0) / 20;
+      const diff = currentPrice - ma20;
+      if ((side === "L" && diff < 0) || (side === "S" && diff > 0)) {
+        sendDiscordNotification(webhookUrl, `【MAタッチ】決済検討: 価格 ${currentPrice.toFixed(3)} / MA ${ma20.toFixed(3)}`);
+      }
     }
-  } catch (e) {
-    console.error("MA分析エラー: " + e.toString());
+  }
+
+  // --- 2. 朝9時台限定の記録処理 ---
+  // now.getHours() が 9 の時だけ実行
+  if (now.getHours() === 9 && logSheet) {
+    try {
+      if (!cArr || cArr.length < 20) return;
+
+      const last20 = cArr.slice(-20);
+      const ma20 = last20.reduce((a, b) => a + b, 0) / 20;
+      
+      // RSI (簡易計算)
+      let ups = 0, downs = 0;
+      for (let i = 1; i < 14; i++) {
+        const diff = cArr[cArr.length - i] - cArr[cArr.length - i - 1];
+        if (diff > 0) ups += diff; else downs -= diff;
+      }
+      const rsi = (ups / (ups + downs)) * 100;
+
+      // BB位置 / MA乖離
+      const squareDiffs = last20.map(v => Math.pow(v - ma20, 2));
+      const stdDev = Math.sqrt(squareDiffs.reduce((a, b) => a + b, 0) / 20);
+      const sigmaPos = (c - ma20) / stdDev;
+      const kairi = c - ma20;
+
+      // 前日比 (24時間前との差)
+      const diffYesterday = cArr.length >= 24 ? (c - cArr[cArr.length - 24]) : 0;
+
+      // シグナル判定
+      let signal = "様子見";
+      if (sigmaPos > 1.5) signal = "売り検討";
+      if (sigmaPos < -1.5) signal = "買い検討";
+
+      // シートへ記録
+      logSheet.appendRow([
+        Utilities.formatDate(now, "JST", "yyyy/MM/dd"), // 日付
+        c.toFixed(3),        // 価格
+        diffYesterday.toFixed(3), // 前日比
+        sigmaPos > 0 ? "上昇" : "下落", // トレンド (簡易)
+        rsi.toFixed(1),      // RSI
+        kairi.toFixed(3),    // MA乖離
+        sigmaPos.toFixed(2) + "σ", // BB位置
+        signal               // シグナル
+      ]);
+    } catch (e) {
+      console.error("9時記録エラー: " + e.toString());
+    }
   }
 }
 
-/**
- * Discord通知サブ関数
- */
 function sendDiscordNotification(url, message) {
   if (!url) return;
-  try {
-    const payload = { "content": message };
-    const options = {
-      "method": "post",
-      "contentType": "application/json",
-      "payload": JSON.stringify(payload),
-      "muteHttpExceptions": true
-    };
-    UrlFetchApp.fetch(url, options);
-  } catch (e) {
-    console.error("通知送信エラー: " + e.toString());
-  }
+  UrlFetchApp.fetch(url, {
+    "method": "post",
+    "contentType": "application/json",
+    "payload": JSON.stringify({ "content": message }),
+    "muteHttpExceptions": true
+  });
 }
