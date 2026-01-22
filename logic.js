@@ -1,64 +1,79 @@
 /**
- * logic.js - [1h] 決済監視 ＆ 朝9時データ蓄積
+ * logic.js - [統合版]
+ * 1. 24H決済監視 (MAタッチ・利確損切)
+ * 2. 計算用最新20シートの自動メンテナンス (Queue形式)
+ * 3. 朝9時限定の日次詳細ログ記録
  */
 function executeMainLogic(params) {
-  const { c, cArr, posSheet, logSheet, webhookUrl, now } = params;
+  const { c, cArr, posSheet, logSheet, calcSheet, webhookUrl, now } = params;
   const currentPrice = parseFloat(c);
 
-  // --- [1] 決済監視 (毎時実行) ---
+  // --- [1] 「計算用最新20」シートのメンテナンス ---
+  // 常に最新20件の価格データを保持し、4H診断の精度を担保する
+  if (calcSheet) {
+    calcSheet.appendRow([currentPrice, Utilities.formatDate(now, "JST", "yyyy/MM/dd HH:mm")]);
+    const lastRow = calcSheet.getLastRow();
+    if (lastRow > 20) {
+      calcSheet.deleteRow(1); // 21行目が入ったら最古の1行目を削除
+    }
+  }
+
+  // --- [2] 決済監視ロジック (保有ポジションがある場合のみ実行) ---
   const posData = posSheet.getDataRange().getValues();
   let activePos = null;
   for (let i = 1; i < posData.length; i++) {
-    if (!posData[i][3]) { // D列が未入力＝保有中
+    if (!posData[i][3]) { // D列(決済)が空＝保有中
       activePos = { row: i + 1, entry: parseFloat(posData[i][0]), side: posData[i][1] };
       break;
     }
   }
 
   if (activePos) {
-    const pips = (activePos.side === "L" ? (currentPrice - activePos.entry) : (activePos.entry - activePos.currentPrice)) * 100;
+    const pips = (activePos.side === "L" ? (currentPrice - activePos.entry) : (activePos.entry - currentPrice)) * 100;
     let alertMsg = "";
 
-    // A. 利益・損失の絶対値監視 (25pips / -15pips)
-    if (pips > 25 || pips < -15) alertMsg = `【指値付近】損益: ${pips.toFixed(1)} pips (${currentPrice.toFixed(3)})`;
+    // 利確 +25pips / 損切 -15pips の目安通知
+    if (pips > 25 || pips < -15) {
+      alertMsg = `【損益通知】現在: ${pips.toFixed(1)} pips (${currentPrice.toFixed(3)})`;
+    }
 
-    // B. MA20タッチ監視 (出口シグナル)
+    // MA20タッチ監視 (cArrが20本以上ある場合)
     if (cArr && cArr.length >= 20) {
       const ma20 = cArr.slice(-20).reduce((a, b) => a + b, 0) / 20;
       if ((activePos.side === "L" && currentPrice < ma20) || (activePos.side === "S" && currentPrice > ma20)) {
-        alertMsg = `【MA20タッチ】決済検討: 価格(${currentPrice.toFixed(3)})が平均をクロス。`;
+        alertMsg = `【決済検討】MA20を価格がクロスしました。価格:${currentPrice.toFixed(3)} / MA:${ma20.toFixed(3)}`;
       }
     }
     if (alertMsg) sendDiscord(webhookUrl, alertMsg);
   }
 
-  // --- [2] 朝9時限定：詳細データ記録 (日次ログ) ---
+  // --- [3] 朝9時限定：詳細データ記録 (日次分析用) ---
   if (now.getHours() === 9 && logSheet) {
-    if (!cArr || cArr.length < 24) return;
+    // cArrが不足している場合は計算をスキップ
+    if (!cArr || cArr.length < 15) return;
 
-    // RSI(14) 精密計算
-    const rsiPeriod = 14;
+    // RSI(14) 計算
     let ups = 0, downs = 0;
+    const rsiPeriod = 14;
     for (let i = 0; i < rsiPeriod; i++) {
       const diff = cArr[cArr.length - 1 - i] - cArr[cArr.length - 2 - i];
       if (diff > 0) ups += diff; else downs -= diff;
     }
     const rsi = (ups / (ups + downs)) * 100;
 
-    // BB / MA / 乖離
+    // BB / MA / 乖離計算 (20期間)
     const ma20 = cArr.slice(-20).reduce((a, b) => a + b, 0) / 20;
     const stdDev = Math.sqrt(cArr.slice(-20).map(v => Math.pow(v - ma20, 2)).reduce((a, b) => a + b, 0) / 20);
-    const sigmaPos = (currentPrice - ma20) / stdDev;
+    const sigmaPos = (currentPrice - ma20) / (stdDev || 0.001);
     const kairi = currentPrice - ma20;
-    const prevDayPrice = cArr[cArr.length - 24]; // 24時間前
-    const diffDay = currentPrice - prevDayPrice;
+    
+    // 前日比 (cArrの最古データとの比較、または簡易的に最新-1個前)
+    const diffDay = cArr.length >= 24 ? (currentPrice - cArr[cArr.length - 24]) : (currentPrice - cArr[0]);
 
-    // 判定シグナル
     let signal = "様子見";
-    if (sigmaPos > 2.0 || rsi > 70) signal = "売り検討";
-    else if (sigmaPos < -2.0 || rsi < 30) signal = "買い検討";
+    if (sigmaPos > 1.8 || rsi > 75) signal = "売り検討";
+    else if (sigmaPos < -1.8 || rsi < 25) signal = "買い検討";
 
-    // 記録項目：日付、価格、前日比、トレンド、RSI、MA乖離、BB位置、シグナル
     logSheet.appendRow([
       Utilities.formatDate(now, "JST", "yyyy/MM/dd"),
       currentPrice.toFixed(3),
@@ -72,7 +87,17 @@ function executeMainLogic(params) {
   }
 }
 
+/**
+ * Discord通知用共通関数
+ */
 function sendDiscord(url, msg) {
   if (!url) return;
-  UrlFetchApp.fetch(url, { "method": "post", "contentType": "application/json", "payload": JSON.stringify({ "content": msg }), "muteHttpExceptions": true });
+  try {
+    UrlFetchApp.fetch(url, {
+      "method": "post",
+      "contentType": "application/json",
+      "payload": JSON.stringify({ "content": msg }),
+      "muteHttpExceptions": true
+    });
+  } catch (e) { console.warn("Discord Send Error: " + e); }
 }
