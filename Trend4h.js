@@ -1,49 +1,26 @@
-/**
- * Trend4h.js - [4h] 環境認識 ＆ 診断ログ蓄積
- */
-function execute4hLogic(params) {
-  const { c, cArr, webhookUrl, dateStr, logSheet } = params;
-  if (!cArr || cArr.length < 20) return;
+function RunTrend4h() {
+  const now = new Date();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const calcSheet = ss.getSheetByName("計算用最新20");
+  const trendLogSheet = ss.getSheetByName("4H診断ログ");
+  const webhookUrl = "https://discord.com/api/webhooks/1329437150992302191/YvP9B-vU7f-uW3-KAsXh_Yv9vEOnV70E7V";
 
-  const currentPrice = parseFloat(c);
-  const last20 = cArr.slice(-20);
-  const ma20 = last20.reduce((a, b) => a + b, 0) / 20;
-  const stdDev = Math.sqrt(last20.map(v => Math.pow(v - ma20, 2)).reduce((a, b) => a + b, 0) / 20);
-  const sigmaPos = (currentPrice - ma20) / stdDev;
-  const kairi = currentPrice - ma20;
-
-  // 10回のブラッシュアップによる判定ロジック
-  let judgment = "レンジ/停滞";
-  let star = "★☆☆";
-  let detail = "MA付近。様子見。";
-
-  if (Math.abs(sigmaPos) > 2.1) {
-    judgment = sigmaPos > 0 ? "過熱（天井圏）" : "過熱（底値圏）";
-    star = "★★★ (🚨激アツ)";
-    detail = "強烈な乖離。反転を待つ。";
-  } else if (Math.abs(sigmaPos) > 1.3) {
-    judgment = sigmaPos > 0 ? "上昇トレンド" : "下落トレンド";
-    star = "★★☆";
-    detail = "トレンド持続。押し目・戻り目。";
-  }
-
-  const msg = `🚨 **4H足 トレード診断** [${dateStr}]\n──────────────────\n判定：**${judgment}**\n期待度：${star}\n価格：${currentPrice.toFixed(3)}\nBB位置：${sigmaPos.toFixed(2)}σ\n──────────────────`;
+  // 最新価格と過去20本のデータを取得（蓄積はしない）
+  const data = calcSheet.getRange(1, 1, calcSheet.getLastRow(), 1).getValues().flat().map(Number);
+  if (data.length < 2) return;
   
-  if (webhookUrl) sendDiscord(webhookUrl, msg);
+  const currentPrice = data[data.length - 1];
+  const cArr = data;
 
-  // 記録項目：日付、価格、判定、詳細（乖離/BB）、期待度
-  if (logSheet) {
-    logSheet.appendRow([
-      dateStr, 
-      currentPrice.toFixed(3), 
-      judgment, 
-      `${detail} (${kairi.toFixed(3)})`, 
-      star
-    ]);
-  }
-}
+  const params = {
+    c: currentPrice,
+    cArr: cArr,
+    logSheet: trendLogSheet,
+    webhookUrl: webhookUrl,
+    now: now,
+    dateStr: Utilities.formatDate(now, "JST", "MM/dd HH:mm")
+  };
 
-function sendDiscord(url, msg) {
-  if (!url) return;
-  UrlFetchApp.fetch(url, { "method": "post", "contentType": "application/json", "payload": JSON.stringify({ "content": msg }), "muteHttpExceptions": true });
+  // 4時間足の環境認識ロジックを実行
+  execute4hLogic(params);
 }
