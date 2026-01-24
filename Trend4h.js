@@ -4,14 +4,12 @@ function execute4hLogic(p) {
   const hour = now.getHours();
 
   // 市場クローズ判定
-  if (day === 0) return;
-  if (day === 1 && hour < 5) return;
-  if (day === 6 && hour >= 7) return;
+  if (day === 0 || (day === 1 && hour < 5) || (day === 6 && hour >= 7)) return;
 
   const { c, cArr, logSheet, dateStr } = p;
   if (cArr.length < 20) return;
 
-  // セッション定義 (9-15, 15-21, 21-3, 3-9)
+  // セッション定義（現物仕様通り）
   let session = "深夜";
   if (hour >= 9 && hour < 15) session = "東京";
   else if (hour >= 15 && hour < 21) session = "欧州";
@@ -23,7 +21,7 @@ function execute4hLogic(p) {
   const diff = c - ma;
   const prevC = cArr[cArr.length - 2];
 
-  // RSI(14)
+  // RSI(14)計算
   let ups = 0, downs = 0;
   for (let i = 1; i < 15; i++) {
     const change = cArr[cArr.length - i] - cArr[cArr.length - i - 1];
@@ -31,7 +29,7 @@ function execute4hLogic(p) {
   }
   const rsi = (ups + downs === 0) ? 50 : (ups / (ups + downs)) * 100;
 
-  // 判定
+  // 判定（期待度判定含む）
   let signal = "様子見";
   let star = "☆☆☆";
 
@@ -43,12 +41,12 @@ function execute4hLogic(p) {
     star = (currentSigma < -2.2 && rsi < 25) ? "★★★" : "★★☆";
   }
 
-  // 4H診断ログ記録
+  // 記録
   if (logSheet) {
     logSheet.appendRow([dateStr, c, signal, star, diff.toFixed(3), session, rsi.toFixed(1)]);
   }
 
-  // Discord通知
+  // 通知（MA乖離アラート含む）
   const webhookUrl = PropertiesService.getScriptProperties().getProperty('DISCORD_URL');
   if (webhookUrl) {
     let content = `【4H診断 / ${session}市場】\n価格: ${c}\n判定: ${signal} ${star}\nMA乖離: ${diff.toFixed(3)}\nRSI: ${rsi.toFixed(1)}\n時刻: ${dateStr}`;
