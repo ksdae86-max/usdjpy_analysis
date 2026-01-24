@@ -1,39 +1,23 @@
-function runAnalysis() {
+function executeLogic(p) {
   const now = new Date();
-  if (now.getDay() === 0 || now.getDay() === 6) return; // 土日は停止
+  const day = now.getDay();
+  const hour = now.getHours();
 
-  const ssId = "110869SQK8frWoG-rUhJGlBVOUtvYNM0wfg9moGg7mQA";
-  const ss = SpreadsheetApp.openById(ssId);
+  // --- 土日・早朝スキップ（月曜5時〜土曜7時稼働） ---
+  if (day === 0) return; 
+  if (day === 1 && hour < 5) return; 
+  if (day === 6 && hour >= 7) return; 
+
+  const { c, ss, dateStr } = p;
   const calcSheet = ss.getSheetByName("計算用最新20");
 
-  // --- 【変更点】GoogleFinance関数を使って確実に価格を取得する ---
-  let currentPrice = null;
-  try {
-    // 一時的に計算用シートの空きセルを使ってGoogleFinanceを呼び出す
-    const tempSheet = ss.getSheetByName("ログ") || ss.getSheets()[0]; 
-    const range = tempSheet.getRange("Z1"); // 邪魔にならない遠いセルを使用
-    range.setFormula('=GOOGLEFINANCE("CURRENCY:USDJPY")');
+  // 【現物仕様】数値が正常な場合のみ蓄積を実行
+  if (c && !isNaN(c)) {
+    calcSheet.appendRow([c, dateStr]);
     
-    // 計算が完了するまで少し待機（重要）
-    SpreadsheetApp.flush();
-    Utilities.sleep(1000); 
-    
-    currentPrice = range.getValue();
-    range.clearContent(); // セルを掃除
-  } catch (e) {
-    console.error("GoogleFinance取得エラー: " + e);
-  }
-
-  console.log("最終取得価格: " + currentPrice);
-
-  // --- 書き込み処理 ---
-  if (calcSheet && currentPrice && !isNaN(currentPrice) && currentPrice > 0) {
-    calcSheet.appendRow([currentPrice, Utilities.formatDate(now, "JST", "yyyy/MM/dd HH:mm")]);
+    // 【現物仕様】21本目で1行目を削除し、Queue構造を維持
     if (calcSheet.getLastRow() > 20) {
       calcSheet.deleteRow(1);
     }
-    console.log("書き込み成功: " + currentPrice);
-  } else {
-    console.error("価格が取得できませんでした。GoogleFinanceが一時的にダウンしているか、数値が不正です。");
   }
 }
