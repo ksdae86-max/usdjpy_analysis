@@ -34,7 +34,7 @@ function executeLogic(p) {
 
     if (status === "" && entryPrice && !isNaN(entryPrice)) {
       const pips = (side === "L") ? (c - entryPrice) * 100 : (entryPrice - c) * 100;
-      
+
       // 利確・損切監視
       if (pips >= 20.0 || pips <= -15.0) {
         const currentAlert = pips >= 20.0 ? "利確圏" : "損切圏";
@@ -43,7 +43,7 @@ function executeLogic(p) {
           posSheet.getRange("C2").setValue(currentAlert);
         }
       }
-      
+
       // MA20逆クロス監視
       const crossTrigger = (side === "L" && c < ma20) ? "L逆クロス" : (side === "S" && c > ma20) ? "S逆クロス" : "";
       if (crossTrigger && lastNotified !== crossTrigger) {
@@ -52,12 +52,13 @@ function executeLogic(p) {
       }
     }
 
-    // --- [4] 朝9時統計 ---
+    // --- [4] 朝9時統計 (RSI期間を14に修正) ---
     if (hour === 9 && dailyLogSheet) {
       let ups = 0, downs = 0;
-      for (let i = 1; i < 15; i++) {
+      // RSI(14)のため、直近15本（変化量14個）ループさせる
+      for (let i = 1; i <= 14; i++) {
         const change = cArr[cArr.length - i] - cArr[cArr.length - i - 1];
-        if (change > 0) ups += change; else downs -= change;
+        if (change > 0) ups += change; else if (change < 0) downs -= change;
       }
       const rsi = (ups + downs === 0) ? 50 : (ups / (ups + downs)) * 100;
       dailyLogSheet.appendRow([dateStr, c, rsi.toFixed(1), (c - ma20).toFixed(3), "9時統計"]);
