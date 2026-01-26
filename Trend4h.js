@@ -19,17 +19,19 @@ function execute4hLogic(p) {
   else if (hour >= 15 && hour < 21) session = "欧州";
   else if (hour >= 21 || hour < 3) session = "ＮＹ";
 
+  // MA(20) & Sigma(20) 計算
   const ma = cArr.reduce((a, b) => a + b) / cArr.length;
   const sigma = Math.sqrt(cArr.map(x => Math.pow(x - ma, 2)).reduce((a, b) => a + b) / cArr.length);
   const currentSigma = (c - ma) / sigma;
   const diff = c - ma;
   const prevC = cArr[cArr.length - 2];
 
-  // RSI(14)
+  // --- RSI(14) 算出 ---
   let ups = 0, downs = 0;
-  for (let i = 1; i < 15; i++) {
+  // RSI(14)のため、直近15本（変化量14個）を参照
+  for (let i = 1; i <= 14; i++) {
     const change = cArr[cArr.length - i] - cArr[cArr.length - i - 1];
-    if (change > 0) ups += change; else downs -= change;
+    if (change > 0) ups += change; else if (change < 0) downs -= change;
   }
   const rsi = (ups + downs === 0) ? 50 : (ups / (ups + downs)) * 100;
 
@@ -47,6 +49,7 @@ function execute4hLogic(p) {
 
   // 4H診断ログ
   if (logSheet) {
+    // 列構成: 日時, 価格, 判定, 判定(★), MA乖離, 時間帯, RSI
     logSheet.appendRow([dateStr, c, signal, star, diff.toFixed(3), session, rsi.toFixed(1)]);
   }
 
@@ -54,6 +57,7 @@ function execute4hLogic(p) {
   const webhookUrl = PropertiesService.getScriptProperties().getProperty('DISCORD_URL');
   if (webhookUrl) {
     let content = `【4H診断 / ${session}市場】\n価格: ${c}\n判定: ${signal} ${star}\nMA乖離: ${diff.toFixed(3)}\nRSI: ${rsi.toFixed(1)}\n時刻: ${dateStr}`;
+    // 0.500 pips以上の乖離で警告付与
     if (Math.abs(diff) >= 0.500) content = "⚠️【MA乖離警告】\n" + content;
 
     UrlFetchApp.fetch(webhookUrl, {
