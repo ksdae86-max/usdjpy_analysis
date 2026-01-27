@@ -11,6 +11,8 @@ function execute4hLogic(p) {
   if (day === 0 || (day === 1 && hour < 5) || (day === 6 && hour >= 7)) return;
 
   const { c, cArr, logSheet, dateStr } = p;
+  
+  // 指標計算に必要な最低限のデータ数
   if (cArr.length < 20) return;
 
   // セッション定義
@@ -19,21 +21,18 @@ function execute4hLogic(p) {
   else if (hour >= 15 && hour < 21) session = "欧州";
   else if (hour >= 21 || hour < 3) session = "ＮＹ";
 
-  // MA(20) & Sigma(20) 計算
-  const ma = cArr.reduce((a, b) => a + b) / cArr.length;
-  const sigma = Math.sqrt(cArr.map(x => Math.pow(x - ma, 2)).reduce((a, b) => a + b) / cArr.length);
+  // --- 【修正】MA(20) & Sigma(20) 計算 ---
+  // データが100個あっても、MAとSigmaは直近20本に固定
+  const analysisArr = cArr.slice(-20);
+  const ma = analysisArr.reduce((a, b) => a + b) / 20;
+  const sigma = Math.sqrt(analysisArr.map(x => Math.pow(x - ma, 2)).reduce((a, b) => a + b) / 20);
   const currentSigma = (c - ma) / sigma;
   const diff = c - ma;
   const prevC = cArr[cArr.length - 2];
 
-  // --- RSI(14) 算出 ---
-  let ups = 0, downs = 0;
-  // RSI(14)のため、直近15本（変化量14個）を参照
-  for (let i = 1; i <= 14; i++) {
-    const change = cArr[cArr.length - i] - cArr[cArr.length - i - 1];
-    if (change > 0) ups += change; else if (change < 0) downs -= change;
-  }
-  const rsi = (ups + downs === 0) ? 50 : (ups / (ups + downs)) * 100;
+  // --- 【修正】MT5準拠 RSI(14) 算出 ---
+  // ワイルダー方式（平滑化）を適用。cArrの全データ（最大100件）を使用して精度を向上。
+  const rsi = calculateWilderRSI(cArr, 14);
 
   // 判定
   let signal = "様子見";
@@ -67,4 +66,37 @@ function execute4hLogic(p) {
       muteHttpExceptions: true
     });
   }
+}
+
+/**
+ * MT5準拠 RSI計算 (ワイルダーの修正移動平均)
+ */
+function calculateWilderRSI(prices, period) {
+  if (prices.length <= period) return 50;
+  
+  let diffs = [];
+  for (let i = 1; i < prices.length; i++) {
+    diffs.push(prices[i] - prices[i - 1]);
+  }
+
+  let upSum = 0;
+  let downSum = 0;
+  // 初回計算（最初のperiod分は単純平均）
+  for (let i = 0; i < period; i++) {
+    let d = diffs[i];
+    if (d > 0) upSum += d; else if (d < 0) downSum -= d;
+  }
+  let upAvg = upSum / period;
+  let downAvg = Math.abs(downSum) / period;
+
+  // ワイルダーの平滑化（過去の平均を13/14引き継ぐMT5方式）
+  for (let i = period; i < diffs.length; i++) {
+    let d = diffs[i];
+    let up = d > 0 ? d : 0;
+    let down = d < 0 ? Math.abs(d) : 0;
+    upAvg = (upAvg * (period - 1) + up) / period;
+    downAvg = (downAvg * (period - 1) + down) / period;
+  }
+
+  return downAvg === 0 ? 100 : 100 - (100 / (1 + upAvg / downAvg));
 }
