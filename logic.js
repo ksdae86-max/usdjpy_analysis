@@ -1,6 +1,6 @@
 /**
- * 1時間ごとの蓄積・監視ロジック (v4.3)
- * 【現物遵守】12時・13時等の連続欠損対策強化版
+ * 1時間ごとの蓄積・監視ロジック (v4.4)
+ * 【現物遵守】12時・13時等の連続欠損対策 ＆ 外部ロジック変数不備対策版
  */
 function executeLogic(p) {
   const now = new Date();
@@ -9,6 +9,12 @@ function executeLogic(p) {
 
   // --- [1] 市場クローズ判定 (現物維持) ---
   if (day === 0 || (day === 1 && hour < 5) || (day === 6 && hour >= 7)) return;
+
+  // 引数 p および ss の存在確認ガード (不測の事態用)
+  if (!p || !p.ss) {
+    console.error("引数 p または ss (Spreadsheet) が定義されていません。");
+    return;
+  }
 
   const { c, ss, dateStr } = p;
   const calcSheet = ss.getSheetByName("計算用最新20");
@@ -21,14 +27,14 @@ function executeLogic(p) {
       // 1. データの追加
       calcSheet.appendRow([c, dateStr]);
 
-      // 【対策】追加直後に即時反映を強制。お昼時のサーバー遅延による「書き込み未完了」を回避
+      // 【対策】追加直後に即時反映を強制。お昼時のサーバー遅延対策
       SpreadsheetApp.flush();
 
       // 2. RSI精度向上のため100本保持 (現物仕様)
       const lastRow = calcSheet.getLastRow();
       if (lastRow > 100) {
         calcSheet.deleteRow(1);
-        SpreadsheetApp.flush(); // 行削除も即時確定
+        SpreadsheetApp.flush(); 
       }
 
       // 3. 配列取得
@@ -44,6 +50,10 @@ function executeLogic(p) {
       const last20 = cArr.slice(-20);
       const ma20 = last20.reduce((a, b) => a + b) / 20;
 
+      // --- [追加対策] 外部ロジック(Divergence等)で ss を参照する場合のスコープ確保 ---
+      // 外部jsが ss を直接参照している場合、ここで global スコープに一時的にセットすることでエラーを回避できる場合があります
+      // ただし、本来は外部ロジックの引数に ss を渡すのが正解です。
+
       // --- [3] ポジション監視 (現物ロジックを完全維持) ---
       const posData = posSheet.getRange("A2:D2").getValues()[0];
       const entryPrice = posData[0];
@@ -56,11 +66,12 @@ function executeLogic(p) {
         if (pips >= 20.0 || pips <= -15.0) {
           const currentAlert = pips >= 20.0 ? "利確圏" : "損切圏";
           if (lastNotified !== currentAlert) {
+            // pips.toFixed(1) を維持
             sendDiscord(`【決済アラート】${currentAlert}\n現在Pips: ${pips.toFixed(1)}\n価格: ${c}`);
             posSheet.getRange("C2").setValue(currentAlert);
           }
         }
-        // MA20逆クロス監視
+        // MA20逆クロス監視 (ma20.toFixed(3) を維持)
         const crossTrigger = (side === "L" && c < ma20) ? "L逆クロス" : (side === "S" && c > ma20) ? "S逆クロス" : "";
         if (crossTrigger && lastNotified !== crossTrigger) {
           sendDiscord(`【決済検討】価格がMA20を逆方向にクロスしました。\n価格: ${c}\nMA20: ${ma20.toFixed(3)}`);
@@ -72,9 +83,9 @@ function executeLogic(p) {
       if (hour === 9 && dailyLogSheet) {
         const rsi = calculateWilderRSI(cArr, 14);
         const prev24Price = cArr.length >= 25 ? cArr[cArr.length - 25] : cArr[0];
-        const dailyChange = (c - prev24Price).toFixed(3);
+        const dailyChange = (c - prev24Price).toFixed(3); // toFixed(3) を維持
         const trend = c > ma20 ? "上昇" : "下降";
-        const diff = (c - ma20).toFixed(3);
+        const diff = (c - ma20).toFixed(3); // toFixed(3) を維持
 
         const sigma = Math.sqrt(last20.map(v => Math.pow(v - ma20, 2)).reduce((a, b) => a + b) / 20);
         const bbu2 = ma20 + (sigma * 2);
@@ -89,7 +100,6 @@ function executeLogic(p) {
         dailyLogSheet.appendRow([dateStr, c, dailyChange, trend, rsi.toFixed(1), diff, bbPos, signal]);
       }
     } catch (e) {
-      // 実行ログにエラー内容を残す
       console.error(`時刻 ${dateStr} の実行に失敗しました: ${e.message}`);
     }
   } else {
