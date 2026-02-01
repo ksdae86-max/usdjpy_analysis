@@ -2,6 +2,7 @@
  * main/CalcEngine.js
  * 指標計算共通ライブラリ (MT5準拠)
  * [仕様書 v3.0: RSI(14), MA(20), Sigma(20) を完全実装]
+ * [精度管理: 出力値を小数点第3位に統一]
  */
 
 const CalcEngine = {
@@ -10,8 +11,13 @@ const CalcEngine = {
    */
   calculateMA: function(prices, period) {
     const target = prices.slice(-period);
+    // 【ガード】期間不足時はnullを返し、後続のtoFixedエラーを防ぐ
     if (target.length < period) return null;
-    return target.reduce((a, b) => a + b, 0) / period;
+    
+    const ma = target.reduce((a, b) => a + b, 0) / period;
+    
+    // 【徹底分析】数値として返しつつ、精度を3桁に固定（Numberで数値型に戻す）
+    return Number(ma.toFixed(3));
   },
 
   /**
@@ -20,10 +26,17 @@ const CalcEngine = {
   calculateSigma: function(prices, period, ma) {
     const target = prices.slice(-period);
     if (target.length < period) return null;
+    
+    // 引数のmaがない場合は再計算（ここでもガードを意識）
     const avg = ma || this.calculateMA(target, period);
+    if (avg === null) return null;
+
     const squareDiffs = target.map(v => Math.pow(v - avg, 2));
     const avgSquareDiff = squareDiffs.reduce((a, b) => a + b, 0) / period;
-    return Math.sqrt(avgSquareDiff);
+    const sigma = Math.sqrt(avgSquareDiff);
+
+    // 【徹底分析】標準偏差も3桁固定
+    return Number(sigma.toFixed(3));
   },
 
   /**
@@ -31,7 +44,8 @@ const CalcEngine = {
    * [現物ロジックを完全継承]
    */
   calculateWilderRSI: function(prices, period) {
-    if (prices.length <= period) return 50;
+    // 100本に満たない場合でも計算は継続するが、期間以下なら50を返す現物仕様
+    if (prices.length <= period) return 50.000;
 
     let diffs = [];
     for (let i = 1; i < prices.length; i++) {
@@ -49,7 +63,6 @@ const CalcEngine = {
     let downAvg = Math.abs(downSum) / period;
 
     // ワイルダーの平滑化（MT5方式）
-    // 蓄積された最大100本全てのデータを使って精度を最大化する
     for (let i = period; i < diffs.length; i++) {
       let d = diffs[i];
       let up = d > 0 ? d : 0;
@@ -58,6 +71,9 @@ const CalcEngine = {
       downAvg = (downAvg * (period - 1) + down) / period;
     }
 
-    return downAvg === 0 ? 100 : 100 - (100 / (1 + upAvg / downAvg));
+    const rsi = downAvg === 0 ? 100 : 100 - (100 / (1 + upAvg / downAvg));
+    
+    // 【徹底分析】RSIも3桁固定でデータベースのロジックを形成
+    return Number(rsi.toFixed(3));
   }
 };
