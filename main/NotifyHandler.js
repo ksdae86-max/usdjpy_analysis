@@ -1,8 +1,7 @@
 /**
  * main/NotifyHandler.js
  * 通知実行・外部連携ロジック
- * [仕様書 v3.0: Discord連携, エラーハンドリングを完全実装]
- * [ブラッシュアップ: 空送信ガード & ログ品質向上]
+ * [仕様書 v4.3: PropertiesService参照・完全移行版]
  */
 
 const NotifyHandler = {
@@ -17,9 +16,12 @@ const NotifyHandler = {
       return;
     }
 
-    const url = CONFIG.DISCORD_URL;
+    // 【重要】スクリプトプロパティからWebhook URLを直接取得
+    // これにより GitHub 上に URL を残さず安全に運用可能
+    const url = PropertiesService.getScriptProperties().getProperty('DISCORD_URL');
+
     if (!url) {
-      console.warn("Discord Webhook URLが設定されていないため、送信をスキップします。");
+      console.warn("通知スキップ: スクリプトプロパティ 'DISCORD_URL' が未設定です。GASの「プロジェクトの設定」を確認してください。");
       return;
     }
 
@@ -31,7 +33,7 @@ const NotifyHandler = {
       method: "post",
       contentType: "application/json",
       payload: JSON.stringify(payload),
-      // 仕様書準拠: ネットワークエラー等でメイン処理を止めない設定
+      // 仕様書準拠: 通信エラー等でメイン処理を止めない
       muteHttpExceptions: true
     };
 
@@ -41,10 +43,11 @@ const NotifyHandler = {
       if (code >= 200 && code < 300) {
         console.log("Discord通知成功");
       } else {
+        // 401:認証エラー, 404:URL間違い 等の判定用
         console.error(`Discord通知失敗 (Status: ${code}): ${res.getContentText()}`);
       }
     } catch (e) {
-      // 例外が発生してもメインロジック（分析）は継続させる
+      // ネットワーク切断等でもメインロジック（分析）は継続
       console.error(`通知送信中に例外が発生しました: ${e.message}`);
     }
   },
