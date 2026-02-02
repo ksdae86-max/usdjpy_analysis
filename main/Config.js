@@ -1,20 +1,20 @@
 /**
  * main/Config.js
- * [現物構造を完全死守・数値ロジック強化版]
+ * [仕様書 v4.3: プロパティ完全移行 & 数値ガード徹底版]
  */
-const CONFIG = {
-  SSID: "1IE8S99OK8frNoG-UhJG1DVOUtYKNW0uKuBru9g7n0A",
 
-  // Discord URL は GASのスクリプトプロパティから取得する
-  get DISCORD_URL() {
-    try {
-      return PropertiesService.getScriptProperties().getProperty('DISCORD_URL');
-    } catch (e) {
-      return "";
-    }
+const CONFIG = {
+  // 【修正】SSIDをスクリプトプロパティから取得。未設定時は実行中のスプレッドシートを参照
+  get SSID() {
+    return PropertiesService.getScriptProperties().getProperty('SSID') || SpreadsheetApp.getActiveSpreadsheet().getId();
   },
 
-  // 現物名称を厳守
+  // Discord URL もプロパティから取得
+  get DISCORD_URL() {
+    return PropertiesService.getScriptProperties().getProperty('DISCORD_URL') || "";
+  },
+
+  // 【現物名称を厳守】
   SHEETS: {
     CALC_LATEST: "計算用最新20",
     POSITION: "ポジション",
@@ -22,7 +22,7 @@ const CONFIG = {
     TREND_4H: "4H診断ログ"
   },
 
-  // 現物パラメータを厳守
+  // 【現物パラメータを厳守】
   ANALYSIS: {
     MA_PERIOD: 20,
     RSI_PERIOD: 14,
@@ -32,7 +32,7 @@ const CONFIG = {
     MA_DIFF_ALERT: 0.500
   },
 
-  // 現物スケジュールを厳守
+  // 【現物スケジュールを厳守】
   MARKET: {
     CLOSE_DAY: 6, // 土曜
     CLOSE_HOUR: 7, 
@@ -40,13 +40,27 @@ const CONFIG = {
     OPEN_HOUR: 5 
   },
 
-  // 【追加：徹底的な数字としての分析ガード】
-  // 現物のロジックを補強し、精神的安定を作るための定義
+  /**
+   * 【目標：徹底的な数字としての分析ガード】
+   * 精神的安定を作るための厳格な数値チェックと精度固定
+   */
   GUARD: {
     // 価格取得判定の数値チェックガード: if (c && !isNaN(c))
-    IS_VALID_NUM: (c) => (c !== null && c !== undefined && !isNaN(c) && typeof c === 'number'),
-    // MA乖離計算の精度維持: .toFixed(3)
-    FIXED: (val) => {
+    // 型チェックを強化し、0より大きい数値のみを有効とする
+    IS_VALID_NUM: (c) => {
+      const n = Number(c);
+      return (c !== null && c !== undefined && !isNaN(n) && n > 0);
+    },
+
+    // MA乖離計算・価格・RSIの精度維持: .toFixed(3)
+    // 出力は計算にそのまま使えるよう Number 型で返す
+    FIXED_VAL: (val) => {
+      const n = parseFloat(val);
+      return !isNaN(n) ? Number(n.toFixed(3)) : 0.000;
+    },
+
+    // 文字列として表示用の .toFixed(3)
+    FIXED_STR: (val) => {
       const n = parseFloat(val);
       return !isNaN(n) ? n.toFixed(3) : "0.000";
     }
