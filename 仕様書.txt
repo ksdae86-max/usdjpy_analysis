@@ -1,42 +1,52 @@
-USDJPY 自動分析システム 完全仕様書 (v4.0)
-​1. 📂 構成ディレクトリとファイル管理
-​GitHub上のリポジトリ構造に基づき、役割を明確に分離。
-​main/: 自動分析、環境認識、ポジション監視などの心臓部。
-​form/: Googleフォームからの手動入力（資産記録・決済等）専用の処理。
-​Main.gs (GAS側): GitHubから各部品を eval() で動的ロードし実行する統合エンジン。
-​2. 📂 main/ モジュール詳細（自動分析・監視）
-​① Config.js (定義)
-​階層構造: SHEETS, ANALYSIS, MARKET の3階層で定数を管理。
-​数値ガード: if (c && !isNaN(c)) をベースとした数値判定と、toFixed(3) による精度指定を定義。
-​② DataRecorder.js (データベース)
-​蓄積: CALC_LATEST（計算用最新20）シートに記録。
-​鮮度維持: 常に最新100本を維持し、古いデータを自動削除。
-​純度: filter ロジックにより、非数値(NaN)やヘッダー文字を排除した純粋な価格配列のみを計算エンジンに渡す。
-​③ CalcEngine.js (計算)
-​MA / Sigma: 期間 20 固定。
-​RSI: 期間 14 固定。MT5準拠（ワイルダーの平滑化移動平均）を採用し、蓄積された全データを用いて精度を最大化。
-​精度: すべての出力値を toFixed(3) でフォーマットし、ロジック形成の最小単位を統一。
-​④ PositionMonitor.js (監視)
-​対象: 「ポジション」シート2行目の未決済データを監視。
-​判定: 利確(+20.0 pips), 損切(-15.0 pips), MA20逆クロス。
-​ガード: 監視実行直前に現在価格とMA20の数値妥当性を再チェック。
-​⑤ TrendAnalyzer.js (4H環境認識)
-​セッション: 東京(9-15), 欧州(15-21), NY(21-3), 深夜(3-9)。
-​統計的判定: ボリンジャーバンド(Sigma)とRSIを組み合わせた期待度(★)判定。
-​堅牢性: ゼロ除算ガードを実装。ボラティリティ喪失時の Infinity による誤判定を防止。
-​⑥ Divergence.js (反転判定)
-​ソース: 「4H診断ログ」過去10本(40h)を参照。
-​検知: 価格の更新とRSI/乖離の縮小（逆行現象）を数値的に検知。
-​⑦ DailyReporter.js (日次統計)
-​定時実行: 毎日 09:00。
-​記録: 前日比、トレンド、RSI、MA乖離、BB位置を「日次記録ログ」へ出力。
-​⑧ NotifyHandler.js (通信)
-​Discord: PropertiesService からWebhookを取得。
-​堅牢性: 空メッセージの送信ガードを実装。muteHttpExceptions: true により、通知の成否に関わらずメインロジックを完遂させる。
-​3. 📂 form/ モジュール詳細（フォーム連携）
-​FormLink.gs: フォーム送信時に起動。form/Config.js を参照し、AssetRecorder.js, EntryHandler.js, ExitHandler.js を振り分ける。
-​独立性: メインの分析ロジックと設定ファイルを分けることで、フォーム側の修正が分析エンジンに影響を与えない構造を実現。
-​4. 📈 数値管理の基本原則（徹底的な分析用）
-​価格・乖離・RSI: すべて toFixed(3) を維持。
-​JST統一: Utilities.formatDate により、ログ・タイムスタンプをすべて日本時間に固定。
-​精神的安定: 数値が不正な場合は「記録しない・通知しない」というガードを徹底し、信頼性の低いデータによる誤判断を排除する。
+​🛠️ USDJPY 自動分析システム 完全仕様書 (v4.2 確定版)
+​1. 📂 構成ディレクトリと厳密なファイル管理
+​GitHubリポジトリ（mainブランチ）の構造を以下に固定。1文字の齟齬も許容しない。
+​■ ルート
+​Main.gs: 全体の統合実行エンジン（GASエディタ配置）。
+​■ main/ ディレクトリ（自動分析エンジン）
+​Config.js: 定数・シート名・閾値
+​DataRecorder.js: 価格蓄積（100本維持）・数値フィルタ
+​CalcEngine.js: 指標計算（MA/Sigma/RSI 3桁精度固定）
+​MarketGuard.js: 市場開場判定ロジック
+​PositionMonitor.js: ポジション監視（利確/損切/逆クロス）
+​Trend4hAnalyzer.js: 4H環境認識・期待度判定
+​DailyReporter.js: 09:00 日次統計出力
+​Divergence.js: 逆行現象（ダイバージェンス）検知
+​NotifyHandler.js: Discord通知（muteHttpExceptions必須）
+​■ form/ ディレクトリ（手動入力系）
+​Config.js / FormSync.js / AssetRecorder.js / EntryHandler.js / ExitHandler.js / NotifyHandler.js
+​2. 📈 数値管理・動作原則
+​3桁精度の徹底: 価格・乖離・RSI等はすべて toFixed(3) を適用しデータベース化。
+​数値ガード: 取得・計算の各工程で if (c && !isNaN(c)) を実施し、異常値でのロジック稼働を阻止。
+​🛠️ システム連携図 (v4.2)
+​この図は Main.gs が各モジュールを呼び出す順序とデータの流れを示しています。
+graph TD
+    %% 外部ソース
+    GitHub[(GitHub リポジトリ)] -- 動的ロード --> Main[Main.gs / エンジン]
+    Sheet[(Google Spreadsheet)] -- 価格取得 --> Main
+
+    subgraph "Main.gs (統合実行プロセス)"
+        Main --> MG[MarketGuard.js<br/>市場開場チェック]
+        MG -- OK --> DR[DataRecorder.js<br/>価格蓄積/100本維持]
+        DR --> CE[CalcEngine.js<br/>MA/Sigma/RSI計算]
+        
+        subgraph "分析・判定ロジック"
+            CE --> PM[PositionMonitor.js<br/>利確/損切/逆クロス]
+            CE --> TA[Trend4hAnalyzer.js<br/>4H環境認識/期待度★]
+            CE --> DV[Divergence.js<br/>逆行現象検知]
+            CE --> DR2[DailyReporter.js<br/>朝9時統計出力]
+        end
+    end
+
+    %% 出力
+    PM --> NH[NotifyHandler.js<br/>Discord送信]
+    TA --> NH
+    DV --> NH
+    DR2 --> Sheet
+    NH --> Discord((Discord Webhook))
+
+    %% スタイル定義
+    style Main fill:#f9f,stroke:#333,stroke-width:4px
+    style GitHub fill:#eee,stroke:#333
+    style Sheet fill:#dfd,stroke:#333
+    style Discord fill:#ddf,stroke:#333
