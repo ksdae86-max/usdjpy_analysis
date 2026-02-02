@@ -1,36 +1,39 @@
-​🛠️ USDJPY 自動分析システム 完全仕様書 (v4.2 確定版)
+​🛠️ USDJPY 自動分析システム 完全仕様書 (v4.3 最終確定版)
 ​1. 📂 構成ディレクトリと厳密なファイル管理
 ​GitHubリポジトリ（mainブランチ）の構造を以下に固定。1文字の齟齬も許容しない。
 ​■ ルート
-​Main.gs: 全体の統合実行エンジン（GASエディタ配置）。
+​Main.gs: 全体の統合実行エンジン。PropertiesServiceよりURL/SSIDを動的に取得し、各部品を eval() で展開する。
 ​■ main/ ディレクトリ（自動分析エンジン）
-​Config.js: 定数・シート名・閾値
-​DataRecorder.js: 価格蓄積（100本維持）・数値フィルタ
-​CalcEngine.js: 指標計算（MA/Sigma/RSI 3桁精度固定）
-​MarketGuard.js: 市場開場判定ロジック
-​PositionMonitor.js: ポジション監視（利確/損切/逆クロス）
-​Trend4hAnalyzer.js: 4H環境認識・期待度判定
-​DailyReporter.js: 09:00 日次統計出力
-​Divergence.js: 逆行現象（ダイバージェンス）検知
-​NotifyHandler.js: Discord通知（muteHttpExceptions必須）
+​Config.js: 定数・シート名・閾値。および GUARD 関数群の定義。
+​DataRecorder.js: 価格蓄積（100本維持）・数値フィルタ。
+​CalcEngine.js: 指標計算（MA/Sigma/RSI 3桁精度固定）。
+​MarketGuard.js: 市場開場判定ロジック。
+​PositionMonitor.js: ポジション監視（利確/損切/逆クロス）。
+​Trend4hAnalyzer.js: 4H環境認識・期待度(★)判定。
+​DailyReporter.js: 09:00 日次統計出力。
+​Divergence.js: 逆行現象（ダイバージェンス）検知。
+​NotifyHandler.js: Discord通知。Webhook URLはスクリプトプロパティから取得。
 ​■ form/ ディレクトリ（手動入力系）
 ​Config.js / FormSync.js / AssetRecorder.js / EntryHandler.js / ExitHandler.js / NotifyHandler.js
-​2. 📈 数値管理・動作原則
-​3桁精度の徹底: 価格・乖離・RSI等はすべて toFixed(3) を適用しデータベース化。
-​数値ガード: 取得・計算の各工程で if (c && !isNaN(c)) を実施し、異常値でのロジック稼働を阻止。
-​🛠️ システム連携図 (v4.2)
-​この図は Main.gs が各モジュールを呼び出す順序とデータの流れを示しています。
+​2. 📈 数値管理・動作原則（徹底的分析仕様）
+​PropertiesServiceによる環境分離: SSID、Discord Webhook URL、GitHubベースURLをコードから完全に排除し、GASのスクリプトプロパティで管理。
+​3桁精度の徹底: 価格・乖離・RSI等はすべて toFixed(3) を適用。CONFIG.GUARD.FIXED_STR() により通知・ログの書式を統一。
+​数値ガードの標準化: if (CONFIG.GUARD.IS_VALID_NUM(c)) を全モジュールの入り口に配置し、非数値および 0 以下の異常値を排除。
+​精神的安定の追求: 通信エラー時は muteHttpExceptions: true により沈黙を守り、メインロジックの完遂を最優先する。
+​🛠️ システム連携図 (v4.3)
+​この図は、PropertiesServiceという「外部脳」から情報を得て、各モジュールが連携する流れを示しています。
 graph TD
     %% 外部ソース
-    GitHub[(GitHub リポジトリ)] -- 動的ロード --> Main[Main.gs / エンジン]
+    Prop[(Script Properties)] -- 環境設定/SSID/URL --> Main[Main.gs / エンジン]
+    GitHub[(GitHub Repo)] -- 動的ロード --> Main
     Sheet[(Google Spreadsheet)] -- 価格取得 --> Main
 
     subgraph "Main.gs (統合実行プロセス)"
         Main --> MG[MarketGuard.js<br/>市場開場チェック]
         MG -- OK --> DR[DataRecorder.js<br/>価格蓄積/100本維持]
         DR --> CE[CalcEngine.js<br/>MA/Sigma/RSI計算]
-        
-        subgraph "分析・判定ロジック"
+
+        subgraph "分析・判定ロジック (CONFIG.GUARD適用)"
             CE --> PM[PositionMonitor.js<br/>利確/損切/逆クロス]
             CE --> TA[Trend4hAnalyzer.js<br/>4H環境認識/期待度★]
             CE --> DV[Divergence.js<br/>逆行現象検知]
@@ -50,3 +53,4 @@ graph TD
     style GitHub fill:#eee,stroke:#333
     style Sheet fill:#dfd,stroke:#333
     style Discord fill:#ddf,stroke:#333
+    style Prop fill:#fff2cc,stroke:#d6b656,stroke-width:2px
