@@ -20,7 +20,7 @@ input double Min_Trail_Pips     = 8.0;
 
 int handle_atr;
 
-// --- 数値ガード関数 ---
+// --- 数値ガード関数 [cite: 2026-02-02] ---
 bool IsValidValue(double val) {
     if(MathIsNaN(val)) return false;
     if(val <= 0) return false;
@@ -99,4 +99,46 @@ void OnTick() {
             double lock20Price = entry + dir * Lock_20_Pips * 10 * _Point;
             if(pips >= Lock_20_Pips + Safety_Buffer_Pips) {
                 if((dir == 1 && nextSL < lock20Price - 0.1 * _Point) ||
-                   (dir == -1 && (nextSL > lock20Price +
+                   (dir == -1 && (nextSL > lock20Price + 0.1 * _Point || nextSL == 0))) {
+                    nextSL = lock20Price;
+                    eventMsg = "20pips確保";
+                }
+            }
+
+            // 5. ATR連動トレール
+            double trailPrice = cur - dir * dynamic_dist * 10 * _Point;
+            double threshold = Trail_Update_Pips * 10 * _Point;
+            if((dir == 1 && trailPrice > nextSL + threshold) || 
+               (dir == -1 && (trailPrice < nextSL - threshold || nextSL == 0))) {
+                nextSL = trailPrice;
+                eventMsg = "ATR追従";
+            }
+
+            // 修正実行
+            if(MathAbs(nextSL - sl) > 0.5 * _Point || MathAbs(nextTP - tp) > 0.5 * _Point) {
+                if(ModifyPos(ticket, nextSL, nextTP)) {
+                    if(eventMsg != "") SendNotification(StringFormat("%s\nSL: %.3f", eventMsg, nextSL));
+                }
+            }
+        }
+    }
+}
+
+// 注文修正サブ関数（構造体初期化を追加）
+bool ModifyPos(ulong ticket, double nSL, double nTP) {
+    MqlTradeRequest request = {}; 
+    MqlTradeResult result = {};
+    ZeroMemory(request); // 徹底的な初期化 [cite: 2026-01-24]
+    
+    request.action = TRADE_ACTION_SLTP;
+    request.position = ticket;
+    request.symbol = _Symbol;
+    request.sl = NormalizeDouble(nSL, _Digits);
+    request.tp = NormalizeDouble(nTP, _Digits);
+    
+    if(!OrderSend(request, result)) {
+        Print("修正失敗: ", GetLastError());
+        return false;
+    }
+    return true;
+}
