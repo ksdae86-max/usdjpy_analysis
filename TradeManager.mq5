@@ -20,7 +20,7 @@ input double Min_Trail_Pips     = 8.0;
 
 int handle_atr;
 
-// --- 数値ガード関数：呼び出しより前に定義 [cite: 2026-02-02] ---
+// --- 【必須】数値ガード関数：呼び出し元より上に配置 [cite: 2026-02-02] ---
 bool IsValidValue(double val) {
     if(MathIsNaN(val)) return false;
     if(val <= 0) return false;
@@ -28,7 +28,7 @@ bool IsValidValue(double val) {
     return true;
 }
 
-// --- 注文修正サブ関数：bcclをboolに修正し、位置を調整 ---
+// --- 【修正】注文修正サブ関数：タイポ(bccl)をboolに修正 ---
 bool ModifyPos(ulong ticket, double nSL, double nTP) {
     MqlTradeRequest request = {}; 
     MqlTradeResult result = {};
@@ -41,12 +41,13 @@ bool ModifyPos(ulong ticket, double nSL, double nTP) {
     request.tp = NormalizeDouble(nTP, _Digits);
 
     if(!OrderSend(request, result)) {
-        Print("修正失敗: ", GetLastError());
+        Print("修正失敗(Code:", GetLastError(), ") Ticket:", ticket);
         return false;
     }
     return true;
 }
 
+//+------------------------------------------------------------------+
 int OnInit() {
     if(_Symbol != "USDJPY") return(INIT_FAILED);
     handle_atr = iATR(_Symbol, ATR_TF, ATR_Period);
@@ -57,6 +58,7 @@ int OnInit() {
 
 void OnDeinit(const int reason) { IndicatorRelease(handle_atr); }
 
+//+------------------------------------------------------------------+
 void OnTick() {
     if(_Symbol != "USDJPY") return;
 
@@ -78,6 +80,7 @@ void OnTick() {
             double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
             double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
+            // 数値ガード実行 [cite: 2026-02-02]
             if(!IsValidValue(bid) || !IsValidValue(ask)) continue;
 
             double cur = (type == POSITION_TYPE_BUY) ? bid : ask;
