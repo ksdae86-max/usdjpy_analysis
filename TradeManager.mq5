@@ -22,7 +22,7 @@ int OnInit() {
     if(_Symbol != "USDJPY") { Print("USDJPY専用です"); return(INIT_FAILED); }
     handle_atr = iATR(_Symbol, ATR_TF, ATR_Period);
     if(handle_atr == INVALID_HANDLE) return(INIT_FAILED);
-    SendNotification("EA起動: 管理開始（初期SLは手動設定を維持）");
+    SendNotification("EA起動: 管理開始（SL更新通知・数値ガード適用）");
     return(INIT_SUCCEEDED);
 }
 
@@ -68,11 +68,10 @@ void OnTick() {
 
             // --- 2. 建値移動 (ATR連動トリガー) ---
             if(pips >= dynamic_dist) {
-                // まだSLが建値より不利な場合のみ更新
                 if(sl == 0 || (type == POSITION_TYPE_BUY && sl < entry - 0.5 * _Point) || 
                    (type == POSITION_TYPE_SELL && (sl > entry + 0.5 * _Point || sl == 0))) {
                     nextSL = entry;
-                    eventMsg = StringFormat("建値移動(ATR:%.1fp到達)", dynamic_dist);
+                    eventMsg = "建値移動";
                 }
             }
 
@@ -94,18 +93,26 @@ void OnTick() {
             if((type == POSITION_TYPE_BUY && trailPrice > nextSL + threshold) || 
                (type == POSITION_TYPE_SELL && (trailPrice < nextSL - threshold || nextSL == 0))) {
                 
-                // ストップレベル制限の厳密チェック
                 bool isStorable = (type == POSITION_TYPE_BUY) ? (bid - trailPrice >= stpLevel + 0.2 * _Point) : (trailPrice - ask >= stpLevel + 0.2 * _Point);
                 if(isStorable) {
                     nextSL = trailPrice;
-                    eventMsg = StringFormat("ATR追従(Dist:%.1fp)", dynamic_dist);
+                    eventMsg = "ATR追従";
                 }
             }
 
             // --- 注文修正実行 ---
-            if(MathAbs(nextSL - sl) > 0.5 * _Point || MathAbs(nextTP - tp) > 0.5 * _Point) {
+            // SLまたはTPの「価格」が実際に変更される必要があるか判定
+            bool isSlUpdated = (MathAbs(nextSL - sl) > 0.5 * _Point);
+            bool isTpUpdated = (MathAbs(nextTP - tp) > 0.5 * _Point);
+
+            if(isSlUpdated || isTpUpdated) {
                 if(ModifyPos(ticket, nextSL, nextTP)) {
-                    if(eventMsg != "") SendNotification(StringFormat("%s: Ticket#%d", eventMsg, ticket));
+                    // SLが物理的に移動した時のみ、新価格を含めて通知
+                    if(isSlUpdated && eventMsg != "") {
+                        string msg = StringFormat("%s\nTicket: #%d\nNew SL: %.3f", 
+                                                  eventMsg, ticket, nextSL);
+                        SendNotification(msg);
+                    }
                 }
             }
         }
@@ -127,4 +134,3 @@ bool ModifyPos(ulong ticket, double nSL, double nTP) {
     }
     return true;
 }
-
