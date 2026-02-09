@@ -20,11 +20,30 @@ input double Min_Trail_Pips     = 8.0;
 
 int handle_atr;
 
-// --- 数値ガード関数 [cite: 2026-02-02] ---
+// --- 数値ガード関数：呼び出しより前に定義 [cite: 2026-02-02] ---
 bool IsValidValue(double val) {
     if(MathIsNaN(val)) return false;
     if(val <= 0) return false;
     if(val == EMPTY_VALUE) return false;
+    return true;
+}
+
+// --- 注文修正サブ関数：bcclをboolに修正し、位置を調整 ---
+bool ModifyPos(ulong ticket, double nSL, double nTP) {
+    MqlTradeRequest request = {}; 
+    MqlTradeResult result = {};
+    ZeroMemory(request); // 徹底的な初期化 [cite: 2026-01-24]
+
+    request.action = TRADE_ACTION_SLTP;
+    request.position = ticket;
+    request.symbol = _Symbol;
+    request.sl = NormalizeDouble(nSL, _Digits);
+    request.tp = NormalizeDouble(nTP, _Digits);
+
+    if(!OrderSend(request, result)) {
+        Print("修正失敗: ", GetLastError());
+        return false;
+    }
     return true;
 }
 
@@ -58,7 +77,7 @@ void OnTick() {
 
             double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
             double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-            
+
             if(!IsValidValue(bid) || !IsValidValue(ask)) continue;
 
             double cur = (type == POSITION_TYPE_BUY) ? bid : ask;
@@ -69,15 +88,13 @@ void OnTick() {
             double nextTP = tp;
             string eventMsg = "";
 
-            // 1. TP自動セット
             if(tp == 0) {
                 nextTP = entry + dir * Max_TP_Pips * 10 * _Point;
                 eventMsg = "初期TP設定(50p)";
             }
 
-            // --- 【修正】2. 建値移動（厳密な同値＋微利益） ---
-            // ATR距離に到達し、かつSLがまだ建値より不利な場合
-            double breakEvenPrice = entry + (dir * 0.2 * 10 * _Point); // 0.2pips分有利な位置へ
+            // 同値移動（＋0.2pips利益確保）
+            double breakEvenPrice = entry + (dir * 0.2 * 10 * _Point);
             if(pips >= dynamic_dist) {
                 if(sl == 0 || (dir == 1 && sl < entry) || (dir == -1 && (sl > entry || sl == 0))) {
                     nextSL = breakEvenPrice;
@@ -85,7 +102,7 @@ void OnTick() {
                 }
             }
 
-            // 3. 10pips確保 (15pips到達時)
+            // 10pips確保 (15pips到達時)
             double lock10Price = entry + dir * Lock_10_Pips * 10 * _Point;
             if(pips >= Lock_10_Trigger) {
                 if((dir == 1 && nextSL < lock10Price - 0.1 * _Point) ||
@@ -95,7 +112,7 @@ void OnTick() {
                 }
             }
 
-            // 4. 20pips確保
+            // 20pips確保
             double lock20Price = entry + dir * Lock_20_Pips * 10 * _Point;
             if(pips >= Lock_20_Pips + Safety_Buffer_Pips) {
                 if((dir == 1 && nextSL < lock20Price - 0.1 * _Point) ||
@@ -105,7 +122,7 @@ void OnTick() {
                 }
             }
 
-            // 5. ATR連動トレール
+            // ATR連動トレール
             double trailPrice = cur - dir * dynamic_dist * 10 * _Point;
             double threshold = Trail_Update_Pips * 10 * _Point;
             if((dir == 1 && trailPrice > nextSL + threshold) || 
@@ -114,7 +131,6 @@ void OnTick() {
                 eventMsg = "ATR追従";
             }
 
-            // 修正実行
             if(MathAbs(nextSL - sl) > 0.5 * _Point || MathAbs(nextTP - tp) > 0.5 * _Point) {
                 if(ModifyPos(ticket, nextSL, nextTP)) {
                     if(eventMsg != "") SendNotification(StringFormat("%s\nSL: %.3f", eventMsg, nextSL));
@@ -122,23 +138,4 @@ void OnTick() {
             }
         }
     }
-}
-
-// 注文修正サブ関数（構造体初期化を追加）
-bool ModifyPos(ulong ticket, double nSL, double nTP) {
-    MqlTradeRequest request = {}; 
-    MqlTradeResult result = {};
-    ZeroMemory(request); // 徹底的な初期化 [cite: 2026-01-24]
-    
-    request.action = TRADE_ACTION_SLTP;
-    request.position = ticket;
-    request.symbol = _Symbol;
-    request.sl = NormalizeDouble(nSL, _Digits);
-    request.tp = NormalizeDouble(nTP, _Digits);
-    
-    if(!OrderSend(request, result)) {
-        Print("修正失敗: ", GetLastError());
-        return false;
-    }
-    return true;
 }
